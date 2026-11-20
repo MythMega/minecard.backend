@@ -382,7 +382,7 @@ async function listTrades(request: Request, db: D1Database): Promise<TradeRouteR
       `SELECT * FROM trades
        WHERE (initiator_uuid = ? OR responder_uuid = ?)
          AND status IN ('pending', 'proposed', 'accepted')
-       ORDER BY created_at DESC`
+       ORDER BY created_at DESC, rowid DESC`
     )
     .bind(uuid, uuid)
     .all<TradeRow>();
@@ -391,7 +391,7 @@ async function listTrades(request: Request, db: D1Database): Promise<TradeRouteR
       `SELECT * FROM trades
        WHERE (initiator_uuid = ? OR responder_uuid = ?)
          AND status IN ('completed', 'declined', 'cancelled', 'expired')
-       ORDER BY updated_at DESC
+       ORDER BY updated_at DESC, rowid DESC
        LIMIT 20`
     )
     .bind(uuid, uuid)
