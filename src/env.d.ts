@@ -3,7 +3,7 @@ declare global {
     bind(...values: unknown[]): D1PreparedStatement;
     first<T = Record<string, unknown>>(colName?: string): Promise<T | null>;
     all<T = Record<string, unknown>>(): Promise<{ results?: T[] }>;
-    run(): Promise<{ success: boolean }>;
+    run(): Promise<{ success: boolean; meta?: { changes?: number } }>;
   }
 
   interface D1Database {

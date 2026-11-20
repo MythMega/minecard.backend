@@ -1,4 +1,5 @@
 import { getCardsByUuids, UpsertCardInput, upsertCard } from "./cardService";
+import { handleTradeRequest } from "./tradeService";
 
 export interface Env {
   DB: D1Database;
@@ -152,6 +153,14 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      // Trades own their whole subtree (`/trades`, `/trades/respond`, ...): the
+      // service answers null for any other path, so the card routes below are
+      // untouched.
+      const tradeResult = await handleTradeRequest(request, env.DB, path);
+      if (tradeResult) {
+        return jsonResponse(tradeResult.body, tradeResult.status);
+      }
+
       if (request.method === "GET" && path === "/cards") {
         const rawUuids = url.searchParams.get("uuids") ?? "";
         const uuidList = rawUuids.split(",");
