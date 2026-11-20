@@ -54,6 +54,26 @@ Un retrait de contre-proposition par B (`cancel` sur un trade `proposed`) ne
 crée pas un statut à part : le trade revient à `pending` et B récupère sa
 carte et ses Œils de l'End.
 
+## Courses de statut
+
+Une action peut arriver après que l'autre joueur a déjà fait évoluer l'échange.
+Chaque transition est gardée par un `WHERE … AND status IN (…)` : elle répond
+`409` quand elle n'est plus possible, sans rien modifier.
+
+| Action tardive | Réponse |
+| --- | --- |
+| `accept` après un retrait de B | `409`, le trade reste `pending` |
+| `claim` sur un échange refusé, annulé ou expiré | `409`, « échange clos » |
+| `respond` après une annulation | `409` |
+| `cancel` / `claim` après acceptation puis récupération | `409` ou `200` inchangé |
+| deuxième refus, deuxième contre-proposition | `409` |
+
+Le client traduit `409` en `trade.error.conflict` et `404` en
+`trade.error.notFound`, ferme le dialogue fautif et recharge la liste. L'escrow
+local (carte, Sparks, Œils) n'est remboursé qu'à la réconciliation avec le
+nouveau statut : une action refusée ne rembourse donc rien, et une fermeture ne
+rembourse jamais deux fois.
+
 ## Remboursements
 
 Le worker ne stocke ni carte, ni Sparks, ni Œils de l'End : il ne fait que
