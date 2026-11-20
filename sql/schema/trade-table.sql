@@ -9,24 +9,14 @@
 --
 -- This script is idempotent (`IF NOT EXISTS`): running it twice never loses a
 -- trade. It only depends on the `users` table of `01-create.sql` for the
--- authentication code, and adds three tables of its own.
--- =============================================================================
-
--- Ender Eyes: the trade currency. At most 5 per account, refilled by 1 per UTC
--- day. The balance lives on the server because it is what makes a trade
--- possible: a client cannot spend more than the worker allows.
+-- authentication code, and adds one table of its own.
 --
--- `ender_eyes_day` is the UTC day the balance was last brought up to date
--- (`YYYY-MM-DD`). Every trade request calls the refill first, so the balance is
--- correct even for a player who has not opened the game for a week.
-CREATE TABLE IF NOT EXISTS trade_accounts (
-  uuid TEXT PRIMARY KEY,
-  ender_eyes INTEGER NOT NULL DEFAULT 5
-    CHECK (ender_eyes >= 0 AND ender_eyes <= 5),
-  ender_eyes_day TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- The Ender Eyes stock is NOT here: like the collection, the Sparks and the
+-- statistics, it lives in the player's save (`user_state["trades"].enderEyes`,
+-- max 5, +1 per UTC day). The worker only knows the trades themselves, which
+-- keeps every route at one authentication read instead of a currency
+-- round-trip.
+-- =============================================================================
 
 -- One trade. The row carries BOTH cards as JSON: the worker never reads the
 -- local collection, so the card a player gave is stored here until the other
@@ -59,16 +49,13 @@ CREATE TABLE IF NOT EXISTS trades (
   -- Cost of ONE side: 1 Ender Eye per rarity + rarity² Sparks.
   sparks_cost INTEGER NOT NULL CHECK (sparks_cost > 0),
   ender_eyes_cost INTEGER NOT NULL CHECK (ender_eyes_cost BETWEEN 1 AND 5),
-  -- Informational only: the client clock is never trusted for the deadline.
-  client_created_at TEXT,
+  -- Initiation timestamp, written by the SERVER clock: the client one is never trusted.
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL,
   initiator_claimed_at TEXT,
   responder_claimed_at TEXT,
   closed_at TEXT,
-  -- UUID of the player who closed the trade, or 'system' for the 24 h sweep.
-  closed_by TEXT,
   CHECK (initiator_uuid <> responder_uuid),
   CHECK (initiator_card_key <> ''),
   -- A proposal always comes with its card, and a card never comes alone.
@@ -94,3 +81,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_one_open_per_initiator
 -- Trade statistics are NOT stored here: like every other counter of the game they live in the
 -- player's save (`user_state["trades"].stats`), so a `.save` export carries them and the worker
 -- never keeps a second, divergent history of a player's progression.
+--
+-- A database created from an earlier revision of this file may still hold an empty `trade_stats`
+-- table: drop it so the schema matches the code. The worker never wrote a row in it.
+DROP TABLE IF EXISTS trade_stats;
+
+-- Earlier revisions kept the Ender Eyes balance here. It is local now: drop the
+-- table so the schema matches the code (a 5-Eye column would only ever be
+-- stale, since nothing refills or spends it anymore).
+DROP TABLE IF EXISTS trade_accounts;

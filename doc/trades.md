@@ -1,8 +1,8 @@
 # Échanges (trades) — API, schéma et cycle de vie
 
 Deux joueurs échangent **une carte de même rareté**. Le worker est la source de
-vérité du cycle de vie, du stock d'**Œil de l'End** et des statistiques ;
-la collection et les Sparks restent locaux au navigateur.
+vérité du **cycle de vie** d'un échange ; la collection, les Sparks, le stock
+d'**Œil de l'End** et les statistiques restent locaux au navigateur.
 
 - Schéma : [`sql/schema/trade-table.sql`](../sql/schema/trade-table.sql)
 - Code : [`src/tradeService.ts`](../src/tradeService.ts), routé par `src/index.ts`
@@ -16,7 +16,7 @@ la collection et les Sparks restent locaux au navigateur.
 | Cartes échangées | même rareté **exactement** |
 | Coût en Œil de l'End | 1 par rareté (rareté 5 = tout le stock) |
 | Coût en Sparks | rareté² (rareté 4 = 16 Sparks) |
-| Stock d'Œil de l'End | 5 maximum, +1 par jour UTC |
+| Stock d'Œil de l'End | 5 maximum, +1 par jour UTC, **stocké localement** |
 | Demandes ouvertes simultanées | 1 par initiateur (`pending` + `proposed`) |
 | Délai | 24 h avant expiration automatique, remboursement des deux côtés |
 | Cartes proposées | uniquement des doublons (vérifié côté client) |
@@ -29,7 +29,11 @@ puisque la rareté est la même.
 
 ## Authentification
 
-Chaque requête porte `uuid` + `auth_code`, exactement comme `POST /cards`.
+Chaque requête porte `uuid` + `auth_code`, exactement comme `POST /cards` :
+`/trades` en paramètres de requête, les `POST` dans le corps JSON. Aucune route
+n'accepte une requête sans les deux champs : le worker répond `403` avant toute
+lecture d'échange.
+
 Un joueur doit avoir **publié sa carte de dresseur** (ligne dans `users`) pour
 échanger : c'est la seule table qui contient le code secret. Une paire
 invalide reçoit `403`.
@@ -52,11 +56,11 @@ carte et ses Œils de l'End.
 
 ## Remboursements
 
-Le worker ne peut pas rendre une carte ni des Sparks qu'il ne stocke pas : il
-rend les **Œils de l'End** (il les possède) et renvoie le statut. Le client,
-lui, tient un registre local des cartes et Sparks mis en jeu
-(`user_state["trades"].escrows`) et les rend quand il voit un statut clos
-(`declined`, `cancelled`, `expired`). Ce registre est la raison pour laquelle un
+Le worker ne stocke ni carte, ni Sparks, ni Œils de l'End : il ne fait que
+renvoyer le statut. Le client tient un registre local de ce qui est mis en jeu
+(`user_state["trades"].escrows` : carte, Sparks et Œils) et le rend lui-même
+quand il voit un statut clos (`declined`, `cancelled`, `expired`) ou une
+contre-proposition retirée. Ce registre est la raison pour laquelle un
 remboursement ne peut pas être appliqué deux fois, même après un rechargement.
 
 ## Routes
@@ -66,15 +70,11 @@ Toutes les réponses sont du JSON. Les erreurs suivent le format existant
 
 ### `GET /trades?uuid=…&auth_code=…`
 
-Liste les échanges du joueur, applique le rafraîchissement quotidien des Œils
-de l'End et **expire d'abord** les échanges ouverts depuis plus de 24 h.
+Liste les échanges du joueur et **expire d'abord** ceux qui sont ouverts depuis
+plus de 24 h. Aucun solde n'est renvoyé : les Œils de l'End sont locaux.
 
 ```json
 {
-  "uuid": "…",
-  "ender_eyes": 3,
-  "max_ender_eyes": 5,
-  "next_refill_day": "2026-11-21",
   "incoming": [ { "id": "…", "status": "pending", "my_role": "responder", "…": "…" } ],
   "outgoing": [ { "id": "…", "status": "proposed", "my_role": "initiator", "…": "…" } ],
   "history": [ { "id": "…", "status": "completed", "…": "…" } ]
@@ -94,16 +94,11 @@ Un trade est rendu sous cette forme :
   "initiator": {
     "uuid": "…", "username": "Steve",
     "card": { "key": "SERIE-A1 / W001_classic", "card_id": "SERIE-A1 / W001",
-              "style": "classic", "set": "A1", "rarity": 3,
-              "name": "Creeper", "image": "assets/cards/…png" },
+              "style": "classic", "set": "A1", "rarity": 3, "name": "Creeper" },
     "claimed": false
   },
   "responder": { "uuid": "…", "username": "Alex", "card": { "…": "…" }, "claimed": false },
-  "created_at": "2026-11-20 12:00:00",
-  "updated_at": "2026-11-20 12:04:11",
-  "expires_at": "2026-11-21 12:00:00",
-  "closed_at": null,
-  "closed_by": null
+  "created_at": "2026-11-20 12:00:00"
 }
 ```
 
@@ -118,17 +113,18 @@ Un trade est rendu sous cette forme :
   "responder_uuid": "…",
   "rarity": 3,
   "card": { "key": "…", "card_id": "…", "style": "classic", "set": "A1",
-            "rarity": 3, "name": "Creeper", "image": "assets/…" },
-  "created_at": "2026-11-20T12:00:00.000Z"
+            "rarity": 3, "name": "Creeper" }
 }
 ```
 
-`created_at` est **informatif** (`client_created_at`) : l'échéance est calculée
-avec l'horloge du worker, jamais avec celle du client.
+La date d'initiation est écrite par l'horloge du **worker** (`created_at`) et
+l'échéance en découle : une horloge client faussée ne peut ni allonger ni
+raccourcir le délai de 24 h. Aucun chemin d'illustration n'est envoyé : le
+receveur résout l'image depuis son propre catalogue avec `card.key`.
 
-- `201` : `{ "trade": { … }, "ender_eyes": 2 }`
+- `201` : `{ "trade": { … } }`
 - `404` : le destinataire n'a pas publié sa carte
-- `409` : demande déjà en cours, ou pas assez d'Œils de l'End
+- `409` : demande déjà en cours (le solde d'Œils est vérifié par le client)
 
 ### `POST /trades/respond` — refuser ou contre-proposer (B)
 
@@ -141,9 +137,10 @@ avec l'horloge du worker, jamais avec celle du client.
   "card": { "…": "…", "rarity": 3 } }
 ```
 
-`deny` rembourse A. `propose` consomme les Œils de l'End de B et remplace une
-éventuelle contre-proposition précédente (remboursée d'abord). La carte doit
-avoir exactement la rareté du trade.
+`deny` clôt le trade, et le client rembourse A depuis son escrow. `propose`
+remplace une éventuelle contre-proposition précédente ; le client rend l'ancien
+escrow et en enregistre un nouveau. La carte doit avoir exactement la rareté du
+trade.
 
 ### `POST /trades/accept` — accepter la contre-proposition (A)
 
@@ -160,8 +157,8 @@ leurs ressources engagées jusqu'à la récupération.
 { "uuid": "…", "auth_code": "…", "trade_id": "…" }
 ```
 
-- A sur `pending`/`proposed` → `cancelled`, remboursement des deux côtés.
-- B sur `proposed` → retour à `pending`, remboursement de B uniquement.
+- A sur `pending`/`proposed` → `cancelled` ; le client rembourse les deux côtés.
+- B sur `proposed` → retour à `pending` ; le client rembourse B uniquement.
 
 ### `POST /trades/claim` — récupérer la carte reçue
 
@@ -208,8 +205,12 @@ Le script est idempotent : le relancer ne détruit aucun échange en cours.
   la republication d'une carte, et l'historique ne doit pas disparaître avec
   elle. L'authentification vérifie déjà l'existence de `users`.
 - **Un seul index partiel** (`initiator_uuid` sur `pending`/`proposed`) garantit
-  la règle « une demande à la fois » même en cas de requêtes concurrentes ; une
-  insertion perdante rembourse immédiatement les Œils de l'End.
+  la règle « une demande à la fois » même en cas de requêtes concurrentes :
+  l'insertion perdante répond `409` et le client rembourse son escrow.
+- **Aucune table de monnaie** : le stock d'Œils de l'End vit dans la sauvegarde
+  (`user_state["trades"]`, avec le jour UTC du dernier rafraîchissement). Une
+  requête d'échange ne fait donc qu'une lecture d'authentification, au lieu de
+  lire, remettre à niveau puis dépenser une ligne de monnaie.
 - **`accepted` n'expire pas** : la carte est déjà engagée et le trade n'attend
   plus qu'une récupération. L'expirer après qu'un joueur a récupéré sa carte
   créerait une duplication.

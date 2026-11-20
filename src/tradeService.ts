@@ -8,20 +8,22 @@
  * EVERYTHING THE WORKER OWNS
  *   - the status machine of a trade, one status per phase (`pending`,
  *     `proposed`, `accepted`, `completed`, `declined`, `cancelled`, `expired`);
- *   - the Ender Eyes balance (max 5, +1 per UTC day), because it is what makes
- *     a trade possible: the client can never spend more than allowed here;
  *   - the 24 h deadline: every authenticated request first expires the overdue
- *     trades and refunds the Ender Eyes of both sides;
- *   - the statistics (per rarity, per outcome, Sparks spent).
+ *     trades, and the client refunds what its local escrow still holds.
  *
  * WHAT THE WORKER DOES NOT OWN
- *   The collection and the Sparks balance live in the browser
- *   (`user_state["collection"]` and `user_state["sparks"]`). The worker
- *   therefore stores the card payload as JSON: the receiver adds that exact
- *   card to its local collection when it claims, and a refund returns the same
- *   payload. `sparks_cost` is the amount the client escrowed locally; the
- *   worker only records it, and only counts it as spent when the trade is
- *   completed.
+ *   The collection, the Sparks balance and the Ender Eyes stock all live in the
+ *   browser (`user_state["collection"]`, `user_state["sparks"]` and
+ *   `user_state["trades"].enderEyes`). The worker therefore stores the card
+ *   payload as JSON: the receiver adds that exact card to its local collection
+ *   when it claims, and a refund returns the same payload. `sparks_cost` and
+ *   `ender_eyes_cost` are the amounts the client escrowed locally; the worker
+ *   only records them for display and for the trade view.
+ *
+ *   Keeping the currency local is deliberate: the game already treats the
+ *   collection and Sparks as local truth, a trade costs a handful of Ender
+ *   Eyes, and every trade route would otherwise pay a `trade_accounts` read
+ *   (plus a refill write) for a number the client can compute from the UTC day.
  *
  * AUTHENTICATION
  *   `uuid` + `auth_code`, exactly like `POST /cards`. A player must have
@@ -35,12 +37,6 @@
 const MIN_TRADE_RARITY = 1;
 const MAX_TRADE_RARITY = 5;
 
-/** Maximum Ender Eyes an account can hold. */
-const MAX_ENDER_EYES = 5;
-
-/** Ender Eyes granted per UTC day. */
-const ENDER_EYES_PER_DAY = 1;
-
 /** Deadline of a trade that is not accepted yet, in hours. */
 const TRADE_EXPIRY_HOURS = 24;
 
@@ -48,19 +44,21 @@ const TRADE_EXPIRY_HOURS = 24;
 const OPEN_REQUEST_STATUSES = ["pending", "proposed"] as const;
 
 /** Every status a trade can carry. */
-export const TRADE_STATUSES = [
-  "pending",
-  "proposed",
-  "accepted",
-  "completed",
-  "declined",
-  "cancelled",
-  "expired",
-] as const;
+export type TradeStatus =
+  | "pending"
+  | "proposed"
+  | "accepted"
+  | "completed"
+  | "declined"
+  | "cancelled"
+  | "expired";
 
-export type TradeStatus = (typeof TRADE_STATUSES)[number];
-
-/** Card payload exchanged between the two players. */
+/**
+ * Card payload exchanged between the two players.
+ *
+ * No illustration path travels: card artwork lives behind remote asset URLs, and the receiver
+ * resolves the picture from its own catalogue with `key`.
+ */
 export interface TradeCardPayload {
   key: string;
   card_id: string;
@@ -68,7 +66,6 @@ export interface TradeCardPayload {
   set: string;
   rarity: number;
   name: string;
-  image: string;
 }
 
 interface TradeRow {
@@ -89,13 +86,6 @@ interface TradeRow {
   initiator_claimed_at: string | null;
   responder_claimed_at: string | null;
   closed_at: string | null;
-  closed_by: string | null;
-}
-
-interface TradeAccountRow {
-  uuid: string;
-  ender_eyes: number;
-  ender_eyes_day: string;
 }
 
 interface AuthRow {
@@ -119,32 +109,6 @@ export function getTradeCost(rarity: number): { sparks: number; enderEyes: numbe
 }
 
 /**
- * Reads the current UTC day.
- *
- * @returns {string} `YYYY-MM-DD`.
- */
-function currentUtcDay(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-/**
- * Counts the whole days between two `YYYY-MM-DD` values.
- *
- * A malformed or future origin reads as 0, so a broken stored day can never
- * grant a burst of Ender Eyes.
- *
- * @param {string} from - Earlier day.
- * @param {string} to - Later day.
- * @returns {number} A non-negative integer.
- */
-function daysBetween(from: string, to: string): number {
-  const start = Date.parse(`${from}T00:00:00Z`);
-  const end = Date.parse(`${to}T00:00:00Z`);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
-  return Math.max(0, Math.floor((end - start) / 86_400_000));
-}
-
-/**
  * Generates a trade identifier.
  *
  * @returns {string} A v4 UUID.
@@ -157,34 +121,7 @@ function generateTradeId(): string {
   return runtime.crypto.randomUUID();
 }
 
-/**
- * Clamps a stored Ender Eyes balance into its legal range.
- *
- * @param {unknown} value - Raw balance.
- * @returns {number} An integer between 0 and 5.
- */
-function normalizeEnderEyes(value: unknown): number {
-  const number = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(number)) return MAX_ENDER_EYES;
-  return Math.min(MAX_ENDER_EYES, Math.max(0, Math.trunc(number)));
-}
 
-/**
- * Accepts only a local asset path for a card illustration.
- *
- * The payload is written by the other player, so a remote URL would turn the
- * trade screen into a request for an arbitrary third-party image.
- *
- * @param {unknown} value - Raw path.
- * @returns {string} A safe `assets/...` path, or an empty string.
- */
-function safeTradeAssetPath(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const path = value.trim().replace(/^\.\//, "");
-  if (path === "" || path.startsWith("/") || path.startsWith("//") || path.includes("..")) return "";
-  if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return "";
-  return path.startsWith("assets/") ? path : "";
-}
 
 /**
  * Validates the card a player offers.
@@ -227,7 +164,6 @@ function validateTradeCard(
       set: text(card.set, 40, ""),
       rarity,
       name: text(card.name, 120, "?"),
-      image: safeTradeAssetPath(card.image),
     },
   };
 }
@@ -262,98 +198,12 @@ async function authenticate(db: D1Database, uuid: string, authCode: string): Pro
 }
 
 /**
- * Reads the trade account, creating it with a full stock on first use.
- *
- * @param {D1Database} db - D1 binding.
- * @param {string} uuid - Player UUID.
- * @returns {Promise<TradeAccountRow>} The stored account.
- */
-async function ensureTradeAccount(db: D1Database, uuid: string): Promise<TradeAccountRow> {
-  const today = currentUtcDay();
-  const row = await db
-    .prepare("SELECT uuid, ender_eyes, ender_eyes_day FROM trade_accounts WHERE uuid = ?")
-    .bind(uuid)
-    .first<TradeAccountRow>();
-  if (row) return row;
-
-  await db
-    .prepare(
-      "INSERT INTO trade_accounts (uuid, ender_eyes, ender_eyes_day) VALUES (?, ?, ?)"
-    )
-    .bind(uuid, MAX_ENDER_EYES, today)
-    .run();
-  return { uuid, ender_eyes: MAX_ENDER_EYES, ender_eyes_day: today };
-}
-
-/**
- * Applies the daily Ender Eyes refill (1 per elapsed UTC day, capped at 5).
- *
- * @param {D1Database} db - D1 binding.
- * @param {string} uuid - Player UUID.
- * @returns {Promise<number>} The up-to-date balance.
- */
-async function refillEnderEyes(db: D1Database, uuid: string): Promise<number> {
-  const account = await ensureTradeAccount(db, uuid);
-  const today = currentUtcDay();
-  const balance = normalizeEnderEyes(account.ender_eyes);
-  if (typeof account.ender_eyes_day !== "string" || account.ender_eyes_day >= today) {
-    return balance;
-  }
-
-  const granted = daysBetween(account.ender_eyes_day, today) * ENDER_EYES_PER_DAY;
-  const next = Math.min(MAX_ENDER_EYES, balance + granted);
-  await db
-    .prepare(
-      "UPDATE trade_accounts SET ender_eyes = ?, ender_eyes_day = ?, updated_at = datetime('now') WHERE uuid = ?"
-    )
-    .bind(next, today, uuid)
-    .run();
-  return next;
-}
-
-/**
- * Debits Ender Eyes inside a guarded update.
- *
- * @param {D1Database} db - D1 binding.
- * @param {string} uuid - Player UUID.
- * @param {number} amount - Eyes to spend.
- * @returns {Promise<boolean>} True when the balance covered the amount.
- */
-async function spendEnderEyes(db: D1Database, uuid: string, amount: number): Promise<boolean> {
-  const result = await db
-    .prepare(
-      "UPDATE trade_accounts SET ender_eyes = ender_eyes - ?, updated_at = datetime('now') WHERE uuid = ? AND ender_eyes >= ?"
-    )
-    .bind(amount, uuid, amount)
-    .run();
-  return (result.meta?.changes ?? 0) > 0;
-}
-
-/**
- * Gives Ender Eyes back, without ever exceeding the stock limit.
- *
- * @param {D1Database} db - D1 binding.
- * @param {string} uuid - Player UUID.
- * @param {number} amount - Eyes to refund.
- * @returns {Promise<void>} Resolves once the balance is written.
- */
-async function refundEnderEyes(db: D1Database, uuid: string, amount: number): Promise<void> {
-  if (amount <= 0) return;
-  await ensureTradeAccount(db, uuid);
-  await db
-    .prepare(
-      "UPDATE trade_accounts SET ender_eyes = MIN(?, ender_eyes + ?), updated_at = datetime('now') WHERE uuid = ?"
-    )
-    .bind(MAX_ENDER_EYES, amount, uuid)
-    .run();
-}
-
-/**
  * Expires every trade that was never accepted within the deadline.
  *
- * Both sides are refunded: the initiator always, the responder when they had
- * proposed a card. The status is updated with a guard so a trade answered at
- * the same moment cannot be expired twice.
+ * Only the status is written: the card, the Sparks and the Ender Eyes stay in
+ * the local escrow of each side, and the client refunds them on its next
+ * refresh (`TradeManager.reconcile`). The update is guarded so a trade answered
+ * at the same moment cannot be expired twice.
  *
  * @param {D1Database} db - D1 binding.
  * @returns {Promise<void>} Resolves once the sweep is done.
@@ -370,17 +220,11 @@ async function expireOverdueTrades(db: D1Database): Promise<void> {
     const closed = await db
       .prepare(
         `UPDATE trades
-         SET status = 'expired', closed_at = datetime('now'), closed_by = 'system', updated_at = datetime('now')
+         SET status = 'expired', closed_at = datetime('now'), updated_at = datetime('now')
          WHERE id = ? AND status IN ('pending', 'proposed')`
       )
-      .bind(trade.id)
-      .run();
-    if ((closed.meta?.changes ?? 0) === 0) continue;
-
-    await refundEnderEyes(db, trade.initiator_uuid, trade.ender_eyes_cost);
-    if (trade.responder_card_key) {
-      await refundEnderEyes(db, trade.responder_uuid, trade.ender_eyes_cost);
-    }
+          .bind(trade.id)
+    .run();
   }
 }
 
@@ -430,10 +274,6 @@ function buildTradeView(row: TradeRow, viewerUuid: string, usernames: Map<string
       claimed: row.responder_claimed_at !== null,
     },
     created_at: row.created_at,
-    updated_at: row.updated_at,
-    expires_at: row.expires_at,
-    closed_at: row.closed_at,
-    closed_by: row.closed_by,
   };
 }
 
@@ -504,8 +344,6 @@ export async function handleTradeRequest(
   if (!(await authenticate(db, uuid, authCode))) {
     return { status: 403, body: { error: "Authentification invalide pour cet UUID." } };
   }
-  await refillEnderEyes(db, uuid);
-
   switch (path) {
     case "/trades":
       return createTrade(db, body, uuid);
@@ -523,7 +361,7 @@ export async function handleTradeRequest(
 }
 
 /**
- * `GET /trades` - every trade of one player, plus the Ender Eyes balance.
+ * `GET /trades` - every trade of one player (no balance: Ender Eyes are local).
  *
  * @param {Request} request - Incoming request.
  * @param {D1Database} db - D1 binding.
@@ -538,7 +376,6 @@ async function listTrades(request: Request, db: D1Database): Promise<TradeRouteR
   }
 
   await expireOverdueTrades(db);
-  const enderEyes = await refillEnderEyes(db, uuid);
 
   const active = await db
     .prepare(
@@ -565,14 +402,9 @@ async function listTrades(request: Request, db: D1Database): Promise<TradeRouteR
   const usernames = await loadUsernames(db, [...activeRows, ...historyRows]);
   const incoming = activeRows.filter((row) => row.responder_uuid === uuid);
   const outgoing = activeRows.filter((row) => row.initiator_uuid === uuid);
-  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
   return {
     status: 200,
     body: {
-      uuid,
-      ender_eyes: enderEyes,
-      max_ender_eyes: MAX_ENDER_EYES,
-      next_refill_day: tomorrow,
       incoming: incoming.map((row) => buildTradeView(row, uuid, usernames)),
       outgoing: outgoing.map((row) => buildTradeView(row, uuid, usernames)),
       history: historyRows.map((row) => buildTradeView(row, uuid, usernames)),
@@ -626,24 +458,16 @@ async function createTrade(
   }
 
   const cost = getTradeCost(rawRarity);
-  const balance = await refillEnderEyes(db, uuid);
-  if (balance < cost.enderEyes) {
-    return { status: 409, body: { error: "Vous n'avez pas assez d'Œil de l'End." } };
-  }
-  if (!(await spendEnderEyes(db, uuid, cost.enderEyes))) {
-    return { status: 409, body: { error: "Vous n'avez pas assez d'Œil de l'End." } };
-  }
 
   const id = generateTradeId();
-  const clientCreatedAt = readString(body, "created_at").slice(0, 40);
   try {
     await db
       .prepare(
         `INSERT INTO trades
           (id, status, rarity, initiator_uuid, responder_uuid,
            initiator_card_key, initiator_card_json,
-           sparks_cost, ender_eyes_cost, client_created_at, expires_at)
-         VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+${TRADE_EXPIRY_HOURS} hours'))`
+           sparks_cost, ender_eyes_cost, expires_at)
+         VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, datetime('now', '+${TRADE_EXPIRY_HOURS} hours'))`
       )
       .bind(
         id,
@@ -653,24 +477,21 @@ async function createTrade(
         validation.card.key,
         JSON.stringify(validation.card),
         cost.sparks,
-        cost.enderEyes,
-        clientCreatedAt
+        cost.enderEyes
       )
       .run();
   } catch (error) {
-    // A concurrent request won the "one open trade" index: give the Eyes back.
-    await refundEnderEyes(db, uuid, cost.enderEyes);
+    // A concurrent request won the "one open trade" index.
     console.warn("Trade creation rejected:", error);
     return { status: 409, body: { error: "Vous avez déjà une demande d'échange en cours." } };
   }
 
   const trade = await getTrade(db, id);
   if (!trade) {
-    await refundEnderEyes(db, uuid, cost.enderEyes);
     return { status: 500, body: { error: "L'échange n'a pas pu être relu." } };
   }
   const usernames = await loadUsernames(db, [trade]);
-  return { status: 201, body: { trade: buildTradeView(trade, uuid, usernames), ender_eyes: balance - cost.enderEyes } };
+  return { status: 201, body: { trade: buildTradeView(trade, uuid, usernames) } };
 }
 
 /**
@@ -699,17 +520,13 @@ async function respondToTrade(
   if (action === "deny") {
     const closed = await db
       .prepare(
-        `UPDATE trades SET status = 'declined', closed_at = datetime('now'), closed_by = ?, updated_at = datetime('now')
+        `UPDATE trades SET status = 'declined', closed_at = datetime('now'), updated_at = datetime('now')
          WHERE id = ? AND status IN ('pending', 'proposed')`
       )
-      .bind(uuid, trade.id)
+      .bind(trade.id)
       .run();
     if ((closed.meta?.changes ?? 0) === 0) {
       return { status: 409, body: { error: "Cet échange a déjà été clos." } };
-    }
-    await refundEnderEyes(db, trade.initiator_uuid, trade.ender_eyes_cost);
-    if (trade.responder_card_key) {
-      await refundEnderEyes(db, trade.responder_uuid, trade.ender_eyes_cost);
     }
     return { status: 200, body: { trade_id: trade.id, status: "declined" } };
   }
@@ -726,19 +543,8 @@ async function respondToTrade(
     return { status: 400, body: { error: "Vous ne pouvez pas proposer la carte déjà proposée." } };
   }
 
-  // Replacing a proposal: the previous one is refunded first, so the balance
-  // check below is made against the real available stock.
-  if (trade.responder_card_key) {
-    await refundEnderEyes(db, uuid, trade.ender_eyes_cost);
-  }
-  const balance = await refillEnderEyes(db, uuid);
-  if (balance < trade.ender_eyes_cost) {
-    return { status: 409, body: { error: "Vous n'avez pas assez d'Œil de l'End." } };
-  }
-  if (!(await spendEnderEyes(db, uuid, trade.ender_eyes_cost))) {
-    return { status: 409, body: { error: "Vous n'avez pas assez d'Œil de l'End." } };
-  }
-
+  // Replacing a proposal: the previous card and its cost are dropped by the
+  // local escrow (the worker only keeps the newest proposal).
   const updated = await db
     .prepare(
       `UPDATE trades
@@ -748,14 +554,10 @@ async function respondToTrade(
     .bind(validation.card.key, JSON.stringify(validation.card), trade.id)
     .run();
   if ((updated.meta?.changes ?? 0) === 0) {
-    await refundEnderEyes(db, uuid, trade.ender_eyes_cost);
     return { status: 409, body: { error: "Cet échange a déjà été clos." } };
   }
 
-  return {
-    status: 200,
-    body: { trade_id: trade.id, status: "proposed", ender_eyes: balance - trade.ender_eyes_cost },
-  };
+  return { status: 200, body: { trade_id: trade.id, status: "proposed" } };
 }
 
 /**
@@ -828,7 +630,6 @@ async function cancelTrade(
     if ((withdrawn.meta?.changes ?? 0) === 0) {
       return { status: 409, body: { error: "Cet échange a déjà été clos." } };
     }
-    await refundEnderEyes(db, uuid, trade.ender_eyes_cost);
     return { status: 200, body: { trade_id: trade.id, status: "pending" } };
   }
 
@@ -838,17 +639,13 @@ async function cancelTrade(
 
   const closed = await db
     .prepare(
-      `UPDATE trades SET status = 'cancelled', closed_at = datetime('now'), closed_by = ?, updated_at = datetime('now')
+      `UPDATE trades SET status = 'cancelled', closed_at = datetime('now'), updated_at = datetime('now')
        WHERE id = ? AND status IN ('pending', 'proposed')`
     )
-    .bind(uuid, trade.id)
+    .bind(trade.id)
     .run();
   if ((closed.meta?.changes ?? 0) === 0) {
     return { status: 409, body: { error: "Cet échange a déjà été clos." } };
-  }
-  await refundEnderEyes(db, trade.initiator_uuid, trade.ender_eyes_cost);
-  if (trade.responder_card_key) {
-    await refundEnderEyes(db, trade.responder_uuid, trade.ender_eyes_cost);
   }
   return { status: 200, body: { trade_id: trade.id, status: "cancelled" } };
 }
