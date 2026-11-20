@@ -678,7 +678,17 @@ async function claimTrade(
     return { status: 200, body: { trade_id: trade.id, status: "completed" } };
   }
   if (trade.status !== "accepted") {
-    return { status: 409, body: { error: "Cet échange n'a pas encore été accepté." } };
+    // A closed trade never becomes claimable, and saying "not accepted yet" for a declined or
+    // expired one would send the player back to a list that no longer offers anything.
+    const closed = ["declined", "cancelled", "expired"].includes(trade.status);
+    return {
+      status: 409,
+      body: {
+        error: closed
+          ? "Cet échange est clos : il n'y a plus de carte à récupérer."
+          : "Cet échange n'a pas encore été accepté.",
+      },
+    };
   }
 
   const column = isInitiator ? "initiator_claimed_at" : "responder_claimed_at";
