@@ -8,7 +8,12 @@ export interface UpsertCardInput {
   card_color_id: string;
   username_color_id: string;
   location_id: string;
-  size_id: string;
+  card_layout: string;
+  profile_icon_size: string;
+  profile_icon_align: string;
+  profile_icon_shape: string;
+  card_rarity: number;
+  title_color_id: string;
   open_booster: number;
   different_cards: number;
   date_first_card: string;
@@ -27,7 +32,12 @@ export interface PublicCard {
   card_color_id: string;
   username_color_id: string;
   location_id: string;
-  size_id: string;
+  card_layout: string;
+  profile_icon_size: string;
+  profile_icon_align: string;
+  profile_icon_shape: string;
+  card_rarity: number;
+  title_color_id: string;
   open_booster: number;
   different_cards: number;
   date_first_card: string;
@@ -47,6 +57,59 @@ export type UpsertResult =
   | { status: 201; action: "created"; card: PublicCard }
   | { status: 200; action: "updated"; card: PublicCard }
   | { status: 403; error: string };
+
+const CARD_COLUMNS = [
+  "uuid",
+  "username",
+  "background_card_id",
+  "profile_picture_id",
+  "title_id",
+  "card_color_id",
+  "username_color_id",
+  "location_id",
+  "card_layout",
+  "profile_icon_size",
+  "profile_icon_align",
+  "profile_icon_shape",
+  "card_rarity",
+  "title_color_id",
+  "open_booster",
+  "different_cards",
+  "date_first_card",
+  "level",
+  "block_mined",
+  "picks",
+  "points",
+].join(", ");
+
+const CARD_PLACEHOLDERS = CARD_COLUMNS.split(", ")
+  .map(() => "?")
+  .join(", ");
+
+const CARD_UPDATE_ASSIGNMENTS = [
+  "username",
+  "background_card_id",
+  "profile_picture_id",
+  "title_id",
+  "card_color_id",
+  "username_color_id",
+  "location_id",
+  "card_layout",
+  "profile_icon_size",
+  "profile_icon_align",
+  "profile_icon_shape",
+  "card_rarity",
+  "title_color_id",
+  "open_booster",
+  "different_cards",
+  "date_first_card",
+  "level",
+  "block_mined",
+  "picks",
+  "points",
+]
+  .map((column) => `${column} = excluded.${column}`)
+  .join(", ");
 
 /**
  * Crée l'utilisateur + la carte si l'UUID n'existe pas encore,
@@ -87,41 +150,10 @@ export async function upsertCard(
 
   await db
     .prepare(
-      `INSERT INTO cards (
-        uuid,
-        username,
-        background_card_id,
-        profile_picture_id,
-        title_id,
-        card_color_id,
-        username_color_id,
-        location_id,
-        size_id,
-        open_booster,
-        different_cards,
-        date_first_card,
-        level,
-        block_mined,
-        picks,
-        points,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO cards (${CARD_COLUMNS}, updated_at)
+      VALUES (${CARD_PLACEHOLDERS}, datetime('now'))
       ON CONFLICT(uuid) DO UPDATE SET
-        username = excluded.username,
-        background_card_id = excluded.background_card_id,
-        profile_picture_id = excluded.profile_picture_id,
-        title_id = excluded.title_id,
-        card_color_id = excluded.card_color_id,
-        username_color_id = excluded.username_color_id,
-        location_id = excluded.location_id,
-        size_id = excluded.size_id,
-        open_booster = excluded.open_booster,
-        different_cards = excluded.different_cards,
-        date_first_card = excluded.date_first_card,
-        level = excluded.level,
-        block_mined = excluded.block_mined,
-        picks = excluded.picks,
-        points = excluded.points,
+        ${CARD_UPDATE_ASSIGNMENTS},
         updated_at = datetime('now')`
     )
     .bind(
@@ -133,7 +165,12 @@ export async function upsertCard(
       input.card_color_id,
       input.username_color_id,
       input.location_id,
-      input.size_id,
+      input.card_layout,
+      input.profile_icon_size,
+      input.profile_icon_align,
+      input.profile_icon_shape,
+      input.card_rarity,
+      input.title_color_id,
       input.open_booster,
       input.different_cards,
       input.date_first_card,
@@ -143,25 +180,25 @@ export async function upsertCard(
       input.points
     )
     .run();
-    
-    const card = await getCardByUuid(db, input.uuid);
-    if (!card) {
-        throw new Error("Impossible de relire la carte après sauvegarde.");
-    }
 
-    if (action === "created") {
-        return {
-        status: 201,
-        action: "created",
-        card,
-        };
-    }
+  const card = await getCardByUuid(db, input.uuid);
+  if (!card) {
+    throw new Error("Impossible de relire la carte après sauvegarde.");
+  }
 
+  if (action === "created") {
     return {
-        status: 200,
-        action: "updated",
-        card,
+      status: 201,
+      action: "created",
+      card,
     };
+  }
+
+  return {
+    status: 200,
+    action: "updated",
+    card,
+  };
 }
 
 export async function getCardByUuid(
@@ -170,24 +207,7 @@ export async function getCardByUuid(
 ): Promise<PublicCard | null> {
   const row = await db
     .prepare(
-      `SELECT
-        uuid,
-        username,
-        background_card_id,
-        profile_picture_id,
-        title_id,
-        card_color_id,
-        username_color_id,
-        location_id,
-        size_id,
-        open_booster,
-        different_cards,
-        date_first_card,
-        level,
-        block_mined,
-        picks,
-        points,
-        updated_at
+      `SELECT ${CARD_COLUMNS}, updated_at
       FROM cards
       WHERE uuid = ?`
     )
@@ -210,24 +230,7 @@ export async function getCardsByUuids(
   }
 
   const placeholders = cleaned.map(() => "?").join(", ");
-  const query = `SELECT
-      uuid,
-      username,
-      background_card_id,
-      profile_picture_id,
-      title_id,
-      card_color_id,
-      username_color_id,
-      location_id,
-      size_id,
-      open_booster,
-      different_cards,
-      date_first_card,
-      level,
-      block_mined,
-      picks,
-      points,
-      updated_at
+  const query = `SELECT ${CARD_COLUMNS}, updated_at
     FROM cards
     WHERE uuid IN (${placeholders})`;
 

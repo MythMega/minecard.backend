@@ -17,7 +17,12 @@ export interface UpsertCardInput {
   card_color_id: string;
   username_color_id: string;
   location_id: string;
-  size_id: string;
+  card_layout: string;
+  profile_icon_size: string;
+  profile_icon_align: string;
+  profile_icon_shape: string;
+  card_rarity: number;
+  title_color_id: string;
   open_booster: number;
   different_cards: number;
   date_first_card: string;
@@ -40,7 +45,12 @@ export interface PublicCard {
   card_color_id: string;
   username_color_id: string;
   location_id: string;
-  size_id: string;
+  card_layout: string;
+  profile_icon_size: string;
+  profile_icon_align: string;
+  profile_icon_shape: string;
+  card_rarity: number;
+  title_color_id: string;
   open_booster: number;
   different_cards: number;
   date_first_card: string;
@@ -58,6 +68,21 @@ function isNonEmptyString(value: unknown): value is string {
 function isNonNegativeInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
+
+const CARD_LAYOUTS = new Set(["classic", "fullart"]);
+const PROFILE_ICON_SIZES = new Set([
+  "tiny",
+  "verySmall",
+  "small",
+  "normal",
+  "large",
+  "veryLarge",
+  "huge",
+]);
+const PROFILE_ICON_ALIGNS = new Set(["top", "left", "center", "right", "bottom"]);
+const PROFILE_ICON_SHAPES = new Set(["normal", "round"]);
+const MIN_CARD_RARITY = 1;
+const MAX_CARD_RARITY = 6;
 
 export function validateUpsertCardPayload(
   body: unknown
@@ -78,7 +103,11 @@ export function validateUpsertCardPayload(
     "card_color_id",
     "username_color_id",
     "location_id",
-    "size_id",
+    "card_layout",
+    "profile_icon_size",
+    "profile_icon_align",
+    "profile_icon_shape",
+    "title_color_id",
     "date_first_card",
   ];
 
@@ -88,9 +117,23 @@ export function validateUpsertCardPayload(
     }
   }
 
+  const enumFields: Array<[keyof UpsertCardInput, Set<string>]> = [
+    ["card_layout", CARD_LAYOUTS],
+    ["profile_icon_size", PROFILE_ICON_SIZES],
+    ["profile_icon_align", PROFILE_ICON_ALIGNS],
+    ["profile_icon_shape", PROFILE_ICON_SHAPES],
+  ];
+
+  for (const [key, allowed] of enumFields) {
+    if (!allowed.has((b[key] as string).trim())) {
+      return { ok: false, error: `La valeur du champ '${key}' est invalide.` };
+    }
+  }
+
   const requiredInts: Array<keyof UpsertCardInput> = [
     "open_booster",
     "different_cards",
+    "card_rarity",
     "level",
     "block_mined",
     "picks",
@@ -101,6 +144,14 @@ export function validateUpsertCardPayload(
     if (!isNonNegativeInt(b[key])) {
       return { ok: false, error: `Le champ '${key}' doit être un entier positif ou nul.` };
     }
+  }
+
+  const cardRarity = b.card_rarity as number;
+  if (cardRarity < MIN_CARD_RARITY || cardRarity > MAX_CARD_RARITY) {
+    return {
+      ok: false,
+      error: `Le champ 'card_rarity' doit être compris entre ${MIN_CARD_RARITY} et ${MAX_CARD_RARITY}.`,
+    };
   }
 
   return {
@@ -115,7 +166,12 @@ export function validateUpsertCardPayload(
       card_color_id: (b.card_color_id as string).trim(),
       username_color_id: (b.username_color_id as string).trim(),
       location_id: (b.location_id as string).trim(),
-      size_id: (b.size_id as string).trim(),
+      card_layout: (b.card_layout as string).trim(),
+      profile_icon_size: (b.profile_icon_size as string).trim(),
+      profile_icon_align: (b.profile_icon_align as string).trim(),
+      profile_icon_shape: (b.profile_icon_shape as string).trim(),
+      card_rarity: cardRarity,
+      title_color_id: (b.title_color_id as string).trim(),
       open_booster: b.open_booster as number,
       different_cards: b.different_cards as number,
       date_first_card: (b.date_first_card as string).trim(),
