@@ -598,8 +598,8 @@ async function acceptTrade(
 /**
  * `POST /trades/cancel` - A cancels the whole trade, or B withdraws a proposal.
  *
- * A withdrawal does not destroy A's request: the trade goes back to `pending`,
- * with B's card and Ender Eyes returned.
+ * A withdrawal does not destroy A's request: the trade goes back to `pending`
+ * and B's card leaves it, which lets the client refund B's local escrow.
  *
  * @param {D1Database} db - D1 binding.
  * @param {Record<string, unknown>} body - Request body.
@@ -654,8 +654,8 @@ async function cancelTrade(
  * `POST /trades/claim` - a player takes the card they receive.
  *
  * The trade becomes `completed` once BOTH sides claimed, which is when the
- * statistics are written: a card taken by one side only is not a finished
- * exchange yet, but nothing is refunded either.
+ * client counts the exchange in its local statistics: a card taken by one side
+ * only is not a finished exchange yet, but nothing is refunded either.
  *
  * @param {D1Database} db - D1 binding.
  * @param {Record<string, unknown>} body - Request body.
