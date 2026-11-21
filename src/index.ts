@@ -1,4 +1,5 @@
 import { getCardsByUuids, UpsertCardInput, upsertCard } from "./cardService";
+import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
 
 export interface Env {
@@ -159,6 +160,13 @@ export default {
       const tradeResult = await handleTradeRequest(request, env.DB, path);
       if (tradeResult) {
         return jsonResponse(tradeResult.body, tradeResult.status);
+      }
+
+      // Online backups own `/saves` (`/saves`, `/saves/last`, `/saves/last/file`): same
+      // contract, the service answers null for any other path.
+      const saveResult = await handleSaveRequest(request, env.DB, path);
+      if (saveResult) {
+        return jsonResponse(saveResult.body, saveResult.status);
       }
 
       if (request.method === "GET" && path === "/cards") {
