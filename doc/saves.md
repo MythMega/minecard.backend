@@ -49,7 +49,18 @@ Les **lectures** sont privées aussi : la date et le fichier exigent le code, do
 un UUID seul ne révèle jamais la sauvegarde de quelqu'un.
 
 La forme est validée avant la base : UUID v4, code de 16 caractères
-`[A-Z0-9]`, sauvegarde non vide et ≤ 2 Mio.
+`[A-Z0-9]`, sauvegarde non vide et ≤ **1 Mo** (`MAX_SAVE_BYTES = 1 000 000`).
+
+D1 documente une limite de **2 000 000 octets par ligne**, et une ligne de `saves`
+contient aussi `uuid`, `byte_size` et `created_at`. Un test réel a bien stocké
+2 Mio (2 097 152 caractères), mais le jeu reste à la moitié de la limite
+documentée : toute la ligne reste largement dans le plafond, quelle que soit la
+valeur réellement appliquée par la plateforme. Un `.save` réel fait quelques
+dizaines de Kio.
+
+La constante du jeu (`SAVE_SYNC_MAX_BYTES` dans `SaveSyncManager.js`) et son
+message d'erreur portent la même valeur : le client refuse avant d'envoyer, le
+worker refuse avant d'écrire, et les deux disent « 1 Mo ».
 
 ## Routes
 
@@ -65,7 +76,12 @@ validation du `.save` est faite par le jeu (`SaveFile.validateSavePayload`),
 avant toute écriture dans IndexedDB.
 
 Codes d'erreur : `400` (champ invalide), `403` (code refusé), `404` (route),
-`405` (méthode), `413` (trop volumineux).
+`405` (méthode), `413` (au-delà de 1 Mo).
+
+Côté jeu, toute requête refusée par le worker est aussi consignée dans
+**Paramètres › Rapport d'erreurs** : le message du serveur, plus le détail de la
+requête (`POST /saves → 413 · …`). La chaîne de requête n'y figure jamais, car
+elle porte `auth_code`.
 
 ## Côté jeu
 

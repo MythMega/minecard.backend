@@ -27,8 +27,16 @@
 /** Uploads kept per account: the older ones are deleted after each insert. */
 export const SAVES_KEPT_PER_ACCOUNT = 5;
 
-/** Maximum length of the save text, in bytes (2 MiB: a `.save` is a few dozen KiB). */
-export const MAX_SAVE_BYTES = 2 * 1024 * 1024;
+/**
+ * Maximum length of the save text, in characters, and therefore in bytes: a `.save` is Base64, so
+ * pure ASCII (`SaveFile.createSaveFile()` ships exactly this text).
+ *
+ * Both halves MUST agree: `SAVE_SYNC_MAX_BYTES` in the game's `SaveSyncManager.js` holds the same
+ * value. D1 documents a 2,000,000-byte limit per ROW, and the row also stores `uuid`, `byte_size`
+ * and `created_at`: a live test proved a 2 MiB value is stored today, but half of the documented
+ * ceiling keeps every row inside it. A real save is a few dozen KiB.
+ */
+export const MAX_SAVE_BYTES = 1000000;
 
 /** Shape of the `auth_code` generated and checked by the game. */
 const AUTH_CODE_PATTERN = /^[A-Z0-9]{16}$/;
@@ -188,7 +196,12 @@ async function uploadSave(
     return { status: 400, body: { error: "Le champ 'save' est requis." } };
   }
   if (save.length > MAX_SAVE_BYTES) {
-    return { status: 413, body: { error: "La sauvegarde est trop volumineuse." } };
+    return {
+      status: 413,
+      body: {
+        error: `La sauvegarde dépasse la limite de 1 Mo (${MAX_SAVE_BYTES} caractères).`,
+      },
+    };
   }
 
   if (!(await authenticateForWrite(db, uuid, authCode))) {
