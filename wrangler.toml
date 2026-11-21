@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 workers_dev = true
 
+# The administration routes (`GET /admin/backup`, `POST /admin/restore`) read their key from the
+# `adminkey` SECRET, never from this file:
+#   npx wrangler secret put adminkey      # once, then the same value on every deployment
+#   npx wrangler secret list              # confirms it exists, never shows its value
+# Locally, `wrangler dev` reads it from `.dev.vars` (git-ignored, see `doc/admin-backup.md`).
+
 [[d1_databases]]
 binding = "DB"
 database_name = "minecard-db"

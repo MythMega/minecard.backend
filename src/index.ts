@@ -1,9 +1,12 @@
+import { handleAdminRequest } from "./adminService";
 import { getCardsByUuids, UpsertCardInput, upsertCard } from "./cardService";
 import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
 
 export interface Env {
   DB: D1Database;
+  /** Administration key of `/admin/*` (see `doc/admin-backup.md`). */
+  adminkey?: string;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -154,6 +157,17 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      // Administration owns `/admin` (`/admin/backup`, `/admin/restore`): it answers a
+      // ready Response, or null for any other path.
+      const adminResponse = await handleAdminRequest(
+        request,
+        { db: env.DB, adminKey: env.adminkey },
+        path
+      );
+      if (adminResponse) {
+        return adminResponse;
+      }
+
       // Trades own their whole subtree (`/trades`, `/trades/respond`, ...): the
       // service answers null for any other path, so the card routes below are
       // untouched.

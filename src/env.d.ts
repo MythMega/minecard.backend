@@ -8,6 +8,7 @@ declare global {
 
   interface D1Database {
     prepare(query: string): D1PreparedStatement;
+    batch(statements: D1PreparedStatement[]): Promise<unknown[]>;
   }
 
   interface HeadersInit {}
@@ -24,15 +25,28 @@ declare global {
     readonly ok: boolean;
     readonly status: number;
     readonly headers: { get(name: string): string | null };
+    readonly body: unknown;
     json<T = unknown>(): Promise<T>;
     text(): Promise<string>;
+    arrayBuffer(): Promise<ArrayBuffer>;
   }
 
   declare class Request {
     readonly url: string;
     readonly method: string;
+    readonly headers: { get(name: string): string | null };
     json<T = unknown>(): Promise<T>;
     text(): Promise<string>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  }
+
+  declare class TextEncoder {
+    encode(input?: string): Uint8Array;
+  }
+
+  declare class TextDecoder {
+    constructor(label?: string);
+    decode(input?: ArrayBuffer | Uint8Array): string;
   }
 
   interface URLSearchParams {

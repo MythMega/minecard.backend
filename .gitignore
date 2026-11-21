@@ -1,0 +1,7 @@
+# Local key of the administration routes (`doc/admin-backup.md`): never committed.
+.dev.vars
+
+# Local D1/KV/R2 state of `wrangler dev`, and the files a manual test leaves behind.
+.wrangler/
+.dryrun/
+dev.log
