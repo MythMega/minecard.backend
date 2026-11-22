@@ -188,10 +188,11 @@ export async function upsertCard(
     .run();
 
   // The favourites travel with the card: a followed player gets them in the same batch read, so
-  // the Follow List never needs a second route for them.
+  // the Follow List never needs a second route for them. A payload WITHOUT the lists writes
+  // nothing: only an explicit field (an empty list included) may change what is stored.
   await writeFavorites(db, input.uuid, {
-    trophies: input.favorite_trophies ?? [],
-    cards: input.favorite_cards ?? [],
+    trophies: input.favorite_trophies,
+    cards: input.favorite_cards,
   });
 
   const card = await getCardByUuid(db, input.uuid);

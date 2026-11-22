@@ -39,10 +39,21 @@ export const BACKUP_FORMAT = "minecards-backup";
 export const BACKUP_VERSION = 1;
 
 /**
- * Tables of the schema, in the order a restore inserts them: `cards` and
- * `saves` point at `users` through a foreign key, so the parent goes first.
+ * Tables of the schema, in the order a restore inserts them: `cards`, `saves` and `favorite` point
+ * at `users` through a foreign key, so the parent goes first.
+ *
+ * `favorite` carries the pinned cards and trophies of every trainer card: leaving it out of a
+ * restore would keep rows of the previous database that no longer have an account.
  */
-const BACKUP_TABLES = ["users", "cards", "trades", "saves"] as const;
+const BACKUP_TABLES = ["users", "cards", "trades", "saves", "favorite"] as const;
+
+/**
+ * Tables a dump may omit without being refused.
+ *
+ * `favorite` arrived after the first backups were in circulation: a dump written before it simply
+ * has no favourites to restore, and refusing it would lose data the player still wants back.
+ */
+const OPTIONAL_BACKUP_TABLES: ReadonlySet<string> = new Set(["favorite"]);
 
 /** Order that empties the database: children first, parents last. */
 const CLEAR_TABLES: readonly string[] = [...BACKUP_TABLES].reverse();
@@ -269,11 +280,22 @@ async function validateBackup(db: D1Database, parsed: unknown): Promise<Validati
         (candidate as { name?: unknown }).name === expected
     ) as Record<string, unknown> | undefined;
 
+    const liveColumns = await readColumns(db, expected);
+    if (liveColumns.length === 0) {
+      // The schema is older than the dump: say it here, before the empty batch fails on a table
+      // that does not exist yet.
+      return { ok: false, error: `La table '${expected}' est introuvable dans la base.` };
+    }
+
     if (!entry) {
+      if (OPTIONAL_BACKUP_TABLES.has(expected)) {
+        // Old dump: the table was not exported yet, so a restore empties it and inserts nothing.
+        file.tables.push({ name: expected, columns: liveColumns, rows: [] });
+        continue;
+      }
       return { ok: false, error: `La table '${expected}' manque dans la sauvegarde.` };
     }
 
-    const liveColumns = await readColumns(db, expected);
     const columns = Array.isArray(entry.columns) ? entry.columns : null;
     if (!columns || columns.length === 0) {
       return { ok: false, error: `La table '${expected}' n'a aucune colonne.` };

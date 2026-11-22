@@ -8,6 +8,12 @@
  * player pinned them. Every slot is nullable, so an account that pinned fewer favourites only
  * stores what it has.
  *
+ * ABSENT IS NOT EMPTY
+ *   A payload that omits `favorite_cards` / `favorite_trophies` leaves the stored list ALONE: an
+ *   older client (or a script that only updates the counters) must never wipe what the player
+ *   pinned. Only an explicit field changes a family, and an explicit empty list clears it. The two
+ *   families are independent: sending the cards alone keeps the trophies.
+ *
  * The worker never interprets an id: a card key (`creeper_foil`) and a trophy id
  * (`A1_completion_bronze`) are opaque strings, resolved by the game. They are only bounded here
  * (length, control characters, seven slots) so a client cannot store an unbounded blob.
@@ -17,10 +23,10 @@
  */
 
 /** Number of favourite slots of a card (`trophy1` … `trophy7`, `card1` … `card7`). */
-export const FAVORITE_SLOTS = 7;
+const FAVORITE_SLOTS = 7;
 
 /** Longest id accepted: a collection key or a trophy id stays far below. */
-export const MAX_FAVORITE_ID_LENGTH = 64;
+const MAX_FAVORITE_ID_LENGTH = 64;
 
 /** Largest number of UUIDs one batch read may ask for (mirrors the other routes). */
 const MAX_FAVORITE_BATCH = 100;
@@ -31,32 +37,35 @@ export interface FavoriteLists {
   cards: string[];
 }
 
-/** Slot columns of the table, in declaration order (`trophy1`, `card1`, … ). */
-const SLOT_COLUMNS: string[] = Array.from({ length: FAVORITE_SLOTS }, (_, index) => index + 1)
-  .flatMap((slot) => [`trophy${slot}`, `card${slot}`]);
+/**
+ * The families a publication may write: `undefined` means "not sent, keep what is stored".
+ *
+ * This is the input of `writeFavorites`, not the shape of the table: an empty array clears a
+ * family, an absent one is not touched.
+ */
+export interface FavoriteWrite {
+  trophies?: string[];
+  cards?: string[];
+}
 
-/** Every column of the table, `uuid` first. */
-const FAVORITE_COLUMNS = ["uuid", ...SLOT_COLUMNS].join(", ");
+/** Slot columns of one family, in declaration order (`trophy1` … `trophy7`). */
+function slotColumns(prefix: string): string[] {
+  return Array.from({ length: FAVORITE_SLOTS }, (_, index) => `${prefix}${index + 1}`);
+}
 
-/** One `?` per column of `FAVORITE_COLUMNS`. */
-const FAVORITE_PLACEHOLDERS = ["uuid", ...SLOT_COLUMNS].map(() => "?").join(", ");
-
-/** `trophy1 = excluded.trophy1, …` of the upsert. */
-const FAVORITE_ASSIGNMENTS = SLOT_COLUMNS.map((column) => `${column} = excluded.${column}`).join(
-  ", "
-);
+/** Every column of the table, `uuid` first (`trophy1` … `trophy7`, then `card1` … `card7`). */
+const ALL_COLUMNS = ["uuid", ...slotColumns("trophy"), ...slotColumns("card")].join(", ");
 
 /**
  * Validates and normalizes one list of ids sent by the client.
  *
- * An absent or null field means "no favourite" (an old client that does not know the feature yet
- * would otherwise overwrite a stored list with nothing: it sends nothing at all).
- *
  * @param {unknown} value - Raw value of the payload.
- * @returns {string[] | null} The trimmed, de-duplicated ids, or null when the value is refused.
+ * @returns {string[] | null | undefined} The trimmed, de-duplicated ids; an empty array for an
+ *   explicit empty list; `undefined` when the field is absent (nothing must change); `null` when
+ *   the value is refused.
  */
-export function normalizeFavoriteList(value: unknown): string[] | null {
-  if (value === undefined || value === null) return [];
+export function normalizeFavoriteList(value: unknown): string[] | null | undefined {
+  if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) return null;
 
   const ids: string[] = [];
@@ -102,26 +111,40 @@ function readSlots(row: Record<string, unknown>, prefix: string): string[] {
 /**
  * Writes the favourites of one account, creating the row on the first publication.
  *
- * The whole row is replaced (every slot, empty ones as NULL): the payload always carries the
- * complete list, so an unpinned favourite disappears instead of surviving in an old slot.
+ * Only the families present in `lists` are written: the statement assigns those columns and lets
+ * the others keep their stored value, which is what makes an omitted field a no-op instead of a
+ * wipe. An empty array writes seven NULLs, which clears the family.
  *
  * @param {D1Database} db - D1 binding.
  * @param {string} uuid - Account UUID (the row is created with the card).
- * @param {FavoriteLists} lists - Validated favourites.
- * @returns {Promise<void>} Resolves once the row is written.
+ * @param {FavoriteWrite} lists - Validated favourites; a family may be absent.
+ * @returns {Promise<void>} Resolves once the write is done, or immediately when nothing was sent.
  */
 export async function writeFavorites(
   db: D1Database,
   uuid: string,
-  lists: FavoriteLists
+  lists: FavoriteWrite
 ): Promise<void> {
-  const values = [...padSlots(lists.trophies), ...padSlots(lists.cards)];
+  const trophyColumns = lists.trophies === undefined ? [] : slotColumns("trophy");
+  const cardColumns = lists.cards === undefined ? [] : slotColumns("card");
+  const columns = [...trophyColumns, ...cardColumns];
+  // Nothing was sent: not a single statement, so the stored favourites stay untouched.
+  if (columns.length === 0) return;
+
+  // Same order as the columns: the INSERT is positional, a crossed order would swap the slots.
+  const values = [
+    ...(lists.trophies === undefined ? [] : padSlots(lists.trophies)),
+    ...(lists.cards === undefined ? [] : padSlots(lists.cards)),
+  ];
+  const placeholders = columns.map(() => "?").join(", ");
+  const assignments = columns.map((column) => `${column} = excluded.${column}`).join(", ");
+
   await db
     .prepare(
-      `INSERT INTO favorite (${FAVORITE_COLUMNS}, updated_at)
-      VALUES (${FAVORITE_PLACEHOLDERS}, datetime('now'))
+      `INSERT INTO favorite (uuid, ${columns.join(", ")}, updated_at)
+      VALUES (?, ${placeholders}, datetime('now'))
       ON CONFLICT(uuid) DO UPDATE SET
-        ${FAVORITE_ASSIGNMENTS},
+        ${assignments},
         updated_at = datetime('now')`
     )
     .bind(uuid, ...values)
@@ -149,7 +172,7 @@ export async function readFavoritesByUuids(
 
   const placeholders = cleaned.map(() => "?").join(", ");
   const result = await db
-    .prepare(`SELECT ${FAVORITE_COLUMNS} FROM favorite WHERE uuid IN (${placeholders})`)
+    .prepare(`SELECT ${ALL_COLUMNS} FROM favorite WHERE uuid IN (${placeholders})`)
     .bind(...cleaned)
     .all<Record<string, unknown>>();
 

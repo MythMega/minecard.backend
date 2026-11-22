@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "description": "Cloudflare Worker + D1 backend for Minecard (zero dependencies)",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",
+    "test": "node --experimental-strip-types --test test/favorites.test.js",
     "db:init": "npx wrangler d1 execute minecard-db --file=./schema.sql --remote",
     "db:init:local": "npx wrangler d1 execute minecard-db --file=./schema.sql --local"
   }
