@@ -2,8 +2,8 @@
 /**
  * Live end-to-end check of a RUNNING MineCards worker: every route that touches D1.
  *
- * Covers the whole online surface against a real HTTP endpoint: trainer cards, favourites and
- * binder, likes (single, batch, public and authenticated reads, Spark bonus), online saves,
+ * Covers the whole online surface against a real HTTP endpoint: trainer cards, favourites, binder
+ * and wishlist, likes (single, batch, public and authenticated reads, Spark bonus), online saves,
  * the trade state machine, the administration gate, and the concurrency of a first publication.
  *
  * USAGE
@@ -239,6 +239,41 @@ async function cards() {
 
   answer = await call("POST", "/cards", { ...updated, binder_code: "pas un code" });
   check("binder_code non URL-safe → 400", answer.status === 400, answer.status);
+
+  // Wishlist: part of the publication, and returned with the card in the same batch read. The
+  // three cases of the column rule are checked: written, untouched by an absent field, cleared by
+  // an explicit empty list.
+  const WISHED = ["a1_003_classic", "a1_004_foil"];
+  await call("POST", "/cards", { ...updated, wishlist_cards: WISHED });
+  answer = await call("GET", `/cards?uuids=${alice.uuid}`);
+  check(
+    "wishlist écrite avec la carte",
+    JSON.stringify(answer.body.wishlists?.[alice.uuid]) === JSON.stringify(WISHED),
+    JSON.stringify(answer.body.wishlists ?? null)
+  );
+
+  await call("POST", "/cards", updated);
+  answer = await call("GET", `/cards?uuids=${alice.uuid}`);
+  check(
+    "publication sans wishlist_cards ne change rien",
+    JSON.stringify(answer.body.wishlists?.[alice.uuid]) === JSON.stringify(WISHED),
+    JSON.stringify(answer.body.wishlists ?? null)
+  );
+
+  await call("POST", "/cards", { ...updated, wishlist_cards: [] });
+  answer = await call("GET", `/cards?uuids=${alice.uuid}`);
+  check(
+    "wishlist vide efface la ligne",
+    Array.isArray(answer.body.wishlists?.[alice.uuid]) &&
+      answer.body.wishlists[alice.uuid].length === 0,
+    JSON.stringify(answer.body.wishlists ?? null)
+  );
+
+  answer = await call("POST", "/cards", {
+    ...updated,
+    wishlist_cards: Array.from({ length: 11 }, (_, index) => `a1_${index}_classic`),
+  });
+  check("11 cartes en wishlist → 400", answer.status === 400, answer.status);
 
   return alice;
 }

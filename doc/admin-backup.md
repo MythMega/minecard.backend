@@ -35,8 +35,8 @@ curl -H "x-admin-key: $ADMIN_KEY" \
   https://minecard-backend.jordanmorindev.workers.dev/admin/backup
 ```
 
-Le fichier contient les sept tables (`users`, `likes`, `cards`, `trades`, `saves`, `favorite`,
-`like_daily_target`), colonnes et lignes comprises, plus un horodatage `exported_at`. Les compteurs
+Le fichier contient les huit tables (`users`, `likes`, `cards`, `trades`, `saves`, `favorite`,
+`wishlist`, `like_daily_target`), colonnes et lignes comprises, plus un horodatage `exported_at`. Les compteurs
 de likes, le bonus en attente et les likes déjà donnés aujourd'hui voyagent donc avec la sauvegarde.
 
 ## Restaurer (tout réécrire)
@@ -54,7 +54,7 @@ Réponse :
 {
   "restored": true,
   "exported_at": "2026-11-21T12:00:00.000Z",
-  "tables": { "users": 42, "likes": 30, "cards": 40, "trades": 7, "saves": 118, "favorite": 12, "like_daily_target": 64 },
+  "tables": { "users": 42, "likes": 30, "cards": 40, "trades": 7, "saves": 118, "favorite": 12, "wishlist": 9, "like_daily_target": 64 },
   "rows": 313,
   "duration_ms": 340,
   "safety_backup": "H4sIAAAA…",
@@ -72,11 +72,11 @@ octets), 10 Mo maximum, 50 Mo une fois décompressé.
 ## Ce que fait la restauration
 
 1. **Validation complète avant la première écriture.** Le marqueur `format`, la `version`, les
-   sept tables, chaque colonne (comparée au schéma réel via `PRAGMA table_info`) et la largeur
+   huit tables, chaque colonne (comparée au schéma réel via `PRAGMA table_info`) et la largeur
    de chaque ligne sont vérifiés. Un fichier douteux répond `400` sans rien modifier.
 2. **Instantané** de l'état courant, renvoyé dans `safety_backup` (voir ci-dessus).
-3. **Vidage** des sept tables en un seul `batch()` atomique, enfants d'abord
-   (`like_daily_target`, `favorite`, `saves`, `trades`, `cards`, `likes`, `users`).
+3. **Vidage** des huit tables en un seul `batch()` atomique, enfants d'abord
+   (`like_daily_target`, `wishlist`, `favorite`, `saves`, `trades`, `cards`, `likes`, `users`).
 4. **Insertion** des lignes par lots de 40 (`batch()` atomique par lot), `users` avant ses enfants
    à cause des clés étrangères.
 
@@ -84,8 +84,8 @@ Un échec au milieu laisse les lots déjà passés en place : renvoyez le même 
 restauration commence par vider les tables — ou renvoyez `safety_backup` pour revenir à l'état
 d'avant.
 
-Une ancienne sauvegarde, écrite avant que `favorite`, `likes` et `like_daily_target` soient
-exportées, reste acceptée : ces tables sont alors vidées et laissées vides, comme tout fichier
+Une ancienne sauvegarde, écrite avant que `favorite`, `wishlist`, `likes` et `like_daily_target`
+soient exportées, reste acceptée : ces tables sont alors vidées et laissées vides, comme tout fichier
 restauré.
 
 ## Pourquoi pas un `.sqlite` ?

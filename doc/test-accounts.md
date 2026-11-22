@@ -33,7 +33,7 @@ npx wrangler d1 execute minecard-db --file=./sql/schema/admin/clean_testuserbdd_
 ```
 
 Ce que le script supprime, pour chaque compte visé : `like_daily_target` (des deux côtés),
-`likes`, `favorite`, `saves`, `trades`, `cards`, puis `users`. Il affiche avant les `DELETE` le
+`likes`, `favorite`, `wishlist`, `saves`, `trades`, `cards`, puis `users`. Il affiche avant les `DELETE` le
 nombre de lignes visées, table par table, et il est idempotent (le relancer ne fait rien).
 
 Il **conserve** la ligne `likes` d'un vrai joueur qui aurait reçu un like d'un compte de test : ce
