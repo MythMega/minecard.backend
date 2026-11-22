@@ -47,7 +47,7 @@ invalide reçoit `403`.
 | `accepted` | A a accepté ; les deux cartes sont verrouillées, chacun peut récupérer |
 | `completed` | Les deux joueurs ont récupéré leur carte |
 | `declined` | B a refusé (remboursement de A) |
-| `cancelled` | A a annulé (remboursement des deux) |
+| `cancelled` | A a annulé, ou un joueur a refusé la carte reçue (remboursement des deux) |
 | `expired` | 24 h écoulées avant acceptation (remboursement des deux) |
 
 Un retrait de contre-proposition par B (`cancel` sur un trade `proposed`) ne
@@ -179,6 +179,22 @@ leurs ressources engagées jusqu'à la récupération.
 
 - A sur `pending`/`proposed` → `cancelled` ; le client rembourse les deux côtés.
 - B sur `proposed` → retour à `pending` ; le client rembourse B uniquement.
+
+### `POST /trades/refuse` — refuser une carte reçue et clore pour les deux
+
+```json
+{ "uuid": "…", "auth_code": "…", "trade_id": "…" }
+```
+
+Appelée par le joueur qui découvre que la carte reçue n'est pas échangeable
+(promo, extension fermée) : le worker ne peut pas en juger, seule la
+configuration du jeu le sait. Le trade passe en `cancelled` pour **les deux**
+joueurs, qui remboursent alors chacun leur escrow au rafraîchissement suivant.
+C'est ce qui remplace l'annulation impossible d'un trade déjà `accepted`.
+
+Refusée (`409`) dès qu'une des deux cartes a été récupérée : le trade serait
+clos alors que l'un a déjà la carte de l'autre, et le remboursement la
+dupliquerait.
 
 ### `POST /trades/claim` — récupérer la carte reçue
 

@@ -1,5 +1,6 @@
 import { handleAdminRequest } from "./adminService";
 import { getCardsByUuids, UpsertCardInput, upsertCard } from "./cardService";
+import { handleLikesRequest } from "./likeService";
 import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
 
@@ -181,6 +182,13 @@ export default {
       const saveResult = await handleSaveRequest(request, env.DB, path);
       if (saveResult) {
         return jsonResponse(saveResult.body, saveResult.status);
+      }
+
+      // Likes own `/likes` (`/likes`, `/likes/friend`): the counts and the bonus are server-side,
+      // the Sparks they pay stay in the player's save.
+      const likeResult = await handleLikesRequest(request, env.DB, path);
+      if (likeResult) {
+        return jsonResponse(likeResult.body, likeResult.status);
       }
 
       if (request.method === "GET" && path === "/cards") {

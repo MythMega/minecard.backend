@@ -353,6 +353,8 @@ export async function handleTradeRequest(
       return acceptTrade(db, body, uuid);
     case "/trades/cancel":
       return cancelTrade(db, body, uuid);
+    case "/trades/refuse":
+      return refuseTrade(db, body, uuid);
     case "/trades/claim":
       return claimTrade(db, body, uuid);
     default:
@@ -641,6 +643,58 @@ async function cancelTrade(
     .prepare(
       `UPDATE trades SET status = 'cancelled', closed_at = datetime('now'), updated_at = datetime('now')
        WHERE id = ? AND status IN ('pending', 'proposed')`
+    )
+    .bind(trade.id)
+    .run();
+  if ((closed.meta?.changes ?? 0) === 0) {
+    return { status: 409, body: { error: "Cet échange a déjà été clos." } };
+  }
+  return { status: 200, body: { trade_id: trade.id, status: "cancelled" } };
+}
+
+/**
+ * `POST /trades/refuse` - one side refuses the card it received and closes the trade for both.
+ *
+ * The worker cannot judge a card (promos and closed extensions only exist in the game
+ * configuration), so the client that finds the received card unexchangeable is trusted to say so.
+ * The trade is closed as `cancelled`, a status every client already refunds on its next refresh:
+ * the player who refused AND the other one get their card, Sparks and Ender Eyes back. Without
+ * this route an accepted trade could not be cancelled, and the other player's escrow would stay
+ * locked until its card was claimed - a claim the game refuses on the refusing side.
+ *
+ * Only allowed while NEITHER side claimed: once a card was taken, closing the trade would let the
+ * taker keep it while the other side is refunded, which duplicates that card.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {Record<string, unknown>} body - Request body.
+ * @param {string} uuid - Authenticated player.
+ * @returns {Promise<TradeRouteResult>} The result.
+ */
+async function refuseTrade(
+  db: D1Database,
+  body: Record<string, unknown>,
+  uuid: string
+): Promise<TradeRouteResult> {
+  const trade = await getTrade(db, readString(body, "trade_id"));
+  if (!trade) return { status: 404, body: { error: "Échange introuvable." } };
+  if (trade.initiator_uuid !== uuid && trade.responder_uuid !== uuid) {
+    return { status: 403, body: { error: "Cet échange ne vous concerne pas." } };
+  }
+  if (trade.status !== "accepted") {
+    return { status: 409, body: { error: "Cet échange n'attend pas de récupération." } };
+  }
+  if (trade.initiator_claimed_at || trade.responder_claimed_at) {
+    return {
+      status: 409,
+      body: { error: "Une carte a déjà été récupérée : l'échange ne peut plus être annulé." },
+    };
+  }
+
+  const closed = await db
+    .prepare(
+      `UPDATE trades SET status = 'cancelled', closed_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ? AND status = 'accepted'
+         AND initiator_claimed_at IS NULL AND responder_claimed_at IS NULL`
     )
     .bind(trade.id)
     .run();
