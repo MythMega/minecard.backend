@@ -202,6 +202,11 @@ async function cards() {
     answer.status === 200 && (answer.body.cards ?? []).length === 1 && typeof answer.body.favorites === "object",
     answer.status
   );
+  check(
+    "POST /cards/batch → wishlists",
+    answer.status === 200 && typeof answer.body.wishlists === "object",
+    answer.status
+  );
 
   await call(
     "POST",
@@ -432,6 +437,45 @@ async function trades() {
   answer = await call("POST", "/trades/claim", { uuid: responder.uuid, auth_code: responder.code, trade_id: tradeId });
   check("1re récupération : encore 'accepted'", answer.status === 200 && answer.body.status === "accepted", JSON.stringify(answer.body));
 
+  // The row stays ACTIVE after the first claim: the client relies on these flags to move it to the
+  // history of the player who already took their card, and must not wait for the other side.
+  answer = await call("GET", `/trades?uuid=${responder.uuid}&auth_code=${responder.code}`);
+  const claimedRow = (answer.body.incoming ?? []).find((trade) => trade.id === tradeId);
+  check(
+    "après 1re récupération : ligne encore active, côté récupéré marqué",
+    answer.status === 200 &&
+      claimedRow?.status === "accepted" &&
+      claimedRow?.responder?.claimed === true &&
+      claimedRow?.initiator?.claimed === false,
+    JSON.stringify(claimedRow?.responder ?? null)
+  );
+
+  answer = await call("GET", `/trades?uuid=${initiator.uuid}&auth_code=${initiator.code}`);
+  const otherRow = (answer.body.outgoing ?? []).find((trade) => trade.id === tradeId);
+  check(
+    "l'autre côté voit toujours l'échange en cours",
+    answer.status === 200 &&
+      otherRow?.status === "accepted" &&
+      otherRow?.initiator?.claimed === false &&
+      otherRow?.responder?.claimed === true,
+    JSON.stringify(otherRow?.initiator ?? null)
+  );
+
+  // An accepted trade (even already claimed by one side) must NOT prevent a new request: the
+  // "one open request" rule only covers pending/proposed.
+  answer = await call("POST", "/trades", {
+    uuid: initiator.uuid,
+    auth_code: initiator.code,
+    responder_uuid: responder.uuid,
+    rarity: 1,
+    card: tradeCard(1, "trade_unblock_classic"),
+  });
+  const unblockId = answer.body.trade?.id ?? "";
+  check("après une récupération, une nouvelle demande passe", answer.status === 201, answer.status);
+  if (unblockId !== "") {
+    await call("POST", "/trades/cancel", { uuid: initiator.uuid, auth_code: initiator.code, trade_id: unblockId });
+  }
+
   answer = await call("POST", "/trades/claim", { uuid: initiator.uuid, auth_code: initiator.code, trade_id: tradeId });
   check("2e récupération : 'completed'", answer.status === 200 && answer.body.status === "completed", JSON.stringify(answer.body));
 
@@ -439,6 +483,21 @@ async function trades() {
   check(
     "historique : échange terminé présent",
     answer.status === 200 && (answer.body.history ?? []).some((trade) => trade.status === "completed"),
+    answer.status
+  );
+  check(
+    "l'échange terminé quitte les listes actives",
+    answer.status === 200 &&
+      ![...(answer.body.incoming ?? []), ...(answer.body.outgoing ?? [])].some(
+        (trade) => trade.id === tradeId
+      ),
+    answer.status
+  );
+
+  answer = await call("GET", `/trades?uuid=${responder.uuid}&auth_code=${responder.code}`);
+  check(
+    "historique : l'échange terminé est chez les deux joueurs",
+    answer.status === 200 && (answer.body.history ?? []).some((trade) => trade.id === tradeId),
     answer.status
   );
 
