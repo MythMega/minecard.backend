@@ -24,6 +24,12 @@
 -- `cardN` holds a collection key (`<cardId>_<style>`, e.g. `creeper_foil`),
 -- `trophyN` a trophy id of the catalogue (e.g. `A1_completion_bronze`): both are
 -- opaque strings for the worker, resolved by the game.
+--
+-- `binder_code` holds the share code of the binder the profile pins on its card
+-- (`collection.html?code=...`, produced by the game): the deflated, URL-safe
+-- Base64 payload of the binder. The worker never reads it, it only hands it to
+-- the followed players so their friend dialog can open the binder. NULL means
+-- "no binder pinned", and an explicit empty code clears it.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS favorite (
@@ -42,6 +48,7 @@ CREATE TABLE IF NOT EXISTS favorite (
   card5 TEXT,
   card6 TEXT,
   card7 TEXT,
+  binder_code TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );

@@ -34,6 +34,8 @@ export interface UpsertCardInput {
   favorite_cards?: string[];
   /** Featured trophy ids, up to seven, in profile order. */
   favorite_trophies?: string[];
+  /** Share code of the binder the profile pins on its card (opaque to the worker). */
+  binder_code?: string;
 }
 
 /**

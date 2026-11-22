@@ -1,4 +1,6 @@
-import { writeFavorites } from "./favoriteService";
+// The extension is explicit: Node runs this module in the tests (`npm test`), and it needs one
+// (see `allowImportingTsExtensions`). The worker bundles it exactly the same way.
+import { writeFavorites } from "./favoriteService.ts";
 
 export interface UpsertCardInput {
   uuid: string;
@@ -27,6 +29,8 @@ export interface UpsertCardInput {
   favorite_cards?: string[];
   /** Featured trophy ids, up to seven, in profile order. */
   favorite_trophies?: string[];
+  /** Share code of the binder the profile pins on its card (opaque to the worker). */
+  binder_code?: string;
 }
 
 export interface PublicCard {
@@ -193,6 +197,7 @@ export async function upsertCard(
   await writeFavorites(db, input.uuid, {
     trophies: input.favorite_trophies,
     cards: input.favorite_cards,
+    binder: input.binder_code,
   });
 
   const card = await getCardByUuid(db, input.uuid);

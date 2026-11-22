@@ -4,9 +4,10 @@
  * Reference: `sql/schema/06-favorites.sql`.
  *
  * The `favorite` table holds ONE row per account: the seven favourite collection keys
- * (`card1` … `card7`) and the seven featured trophy ids (`trophy1` … `trophy7`), in the order the
- * player pinned them. Every slot is nullable, so an account that pinned fewer favourites only
- * stores what it has.
+ * (`card1` … `card7`), the seven featured trophy ids (`trophy1` … `trophy7`), in the order the
+ * player pinned them, and the share code of the binder the profile pins on its card
+ * (`binder_code`). Every slot is nullable, so an account that pinned fewer favourites only stores
+ * what it has.
  *
  * ABSENT IS NOT EMPTY
  *   A payload that omits `favorite_cards` / `favorite_trophies` leaves the stored list ALONE: an
@@ -31,21 +32,34 @@ const MAX_FAVORITE_ID_LENGTH = 64;
 /** Largest number of UUIDs one batch read may ask for (mirrors the other routes). */
 const MAX_FAVORITE_BATCH = 100;
 
+/**
+ * Longest binder code accepted: the payload of a full 30-card page deflates to a few kilobytes, so
+ * the limit is generous while still refusing an unbounded blob.
+ */
+const MAX_BINDER_CODE_LENGTH = 8192;
+
+/** Characters a share code may contain: it is the URL-safe Base64 of a deflated payload. */
+const BINDER_CODE_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 /** The favourites of one player, in display order. */
 export interface FavoriteLists {
   trophies: string[];
   cards: string[];
+  /** Share code of the binder pinned on the card, or an empty string. */
+  binder: string;
 }
 
 /**
  * The families a publication may write: `undefined` means "not sent, keep what is stored".
  *
  * This is the input of `writeFavorites`, not the shape of the table: an empty array clears a
- * family, an absent one is not touched.
+ * family, an absent one is not touched, and an empty binder code clears the pinned binder.
  */
 export interface FavoriteWrite {
   trophies?: string[];
   cards?: string[];
+  /** Share code of the pinned binder; `undefined` keeps the stored one, `""` clears it. */
+  binder?: string;
 }
 
 /** Slot columns of one family, in declaration order (`trophy1` … `trophy7`). */
@@ -53,8 +67,13 @@ function slotColumns(prefix: string): string[] {
   return Array.from({ length: FAVORITE_SLOTS }, (_, index) => `${prefix}${index + 1}`);
 }
 
-/** Every column of the table, `uuid` first (`trophy1` … `trophy7`, then `card1` … `card7`). */
-const ALL_COLUMNS = ["uuid", ...slotColumns("trophy"), ...slotColumns("card")].join(", ");
+/**
+ * Every column of the table, `uuid` first (`trophy1` … `trophy7`, then `card1` … `card7`, then the
+ * pinned binder).
+ */
+const ALL_COLUMNS = ["uuid", ...slotColumns("trophy"), ...slotColumns("card"), "binder_code"].join(
+  ", "
+);
 
 /**
  * Validates and normalizes one list of ids sent by the client.
@@ -80,6 +99,29 @@ export function normalizeFavoriteList(value: unknown): string[] | null | undefin
 
   if (ids.length > FAVORITE_SLOTS) return null;
   return ids;
+}
+
+/**
+ * Validates the share code of the binder a profile pins on its card.
+ *
+ * The worker never reads a code: it stores the opaque string the game produced (the deflated,
+ * URL-safe Base64 payload of a binder) and gives it back to the followed players, so only its
+ * shape is checked here.
+ *
+ * @param {unknown} value - Raw value of the payload.
+ * @returns {string | null | undefined} The trimmed code; an empty string for an explicit "no
+ *   binder" (it clears the stored one); `undefined` when the field is absent (nothing changes);
+ *   `null` when the value is refused.
+ */
+export function normalizeBinderCode(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") return null;
+
+  const code = value.trim();
+  if (code === "") return "";
+  if (code.length > MAX_BINDER_CODE_LENGTH) return null;
+  if (!BINDER_CODE_PATTERN.test(code)) return null;
+  return code;
 }
 
 /**
@@ -127,7 +169,8 @@ export async function writeFavorites(
 ): Promise<void> {
   const trophyColumns = lists.trophies === undefined ? [] : slotColumns("trophy");
   const cardColumns = lists.cards === undefined ? [] : slotColumns("card");
-  const columns = [...trophyColumns, ...cardColumns];
+  const binderColumns = lists.binder === undefined ? [] : ["binder_code"];
+  const columns = [...trophyColumns, ...cardColumns, ...binderColumns];
   // Nothing was sent: not a single statement, so the stored favourites stay untouched.
   if (columns.length === 0) return;
 
@@ -135,6 +178,7 @@ export async function writeFavorites(
   const values = [
     ...(lists.trophies === undefined ? [] : padSlots(lists.trophies)),
     ...(lists.cards === undefined ? [] : padSlots(lists.cards)),
+    ...(lists.binder === undefined ? [] : [lists.binder === "" ? null : lists.binder]),
   ];
   const placeholders = columns.map(() => "?").join(", ");
   const assignments = columns.map((column) => `${column} = excluded.${column}`).join(", ");
@@ -183,6 +227,7 @@ export async function readFavoritesByUuids(
     favorites[uuid] = {
       trophies: readSlots(row, "trophy"),
       cards: readSlots(row, "card"),
+      binder: typeof row.binder_code === "string" ? row.binder_code : "",
     };
   }
   return favorites;

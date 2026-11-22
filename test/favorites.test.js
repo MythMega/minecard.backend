@@ -7,20 +7,47 @@
  * empty list clears that family, and the two families never touch each other.
  *
  * No test framework was added: `node --test` ships with Node and the worker has no dependency
- * (see `package.json`). `src/favoriteService.ts` is imported directly thanks to the type stripping
+ * (see `package.json`). The sources are imported as they are written, thanks to the type stripping
  * of Node, and the database is a stand-in that records the statements, so the assertions are about
  * the SQL the service emits - not about D1 itself (the real database was checked by hand through
- * `wrangler dev`, see the summary of the change).
+ * `wrangler dev`).
  *
  * Run with `npm test`.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { upsertCard } from "../src/cardService.ts";
 import { normalizeFavoriteList, writeFavorites } from "../src/favoriteService.ts";
 
 const UUID = "6f9619ff-8b86-d011-b42d-00cf4fc964ff";
 const SLOTS = 7;
+
+/** Body of a `POST /cards` without any favourite list, as the client sends it on a first day. */
+const PUBLICATION = {
+  uuid: UUID,
+  auth_code: "ABCDEFGH12345678",
+  username: "Tester",
+  background_card_id: "default",
+  profile_picture_id: "none",
+  title_id: "none",
+  card_color_id: "auto",
+  username_color_id: "auto",
+  location_id: "assets/img/card_back.png",
+  card_layout: "classic",
+  profile_icon_size: "normal",
+  profile_icon_align: "center",
+  profile_icon_shape: "normal",
+  card_rarity: 1,
+  title_color_id: "auto",
+  open_booster: 0,
+  different_cards: 0,
+  date_first_card: "2026-11-22",
+  level: 1,
+  block_mined: 0,
+  picks: 0,
+  points: 10,
+};
 
 const TROPHY_COLUMNS = Array.from({ length: SLOTS }, (_, index) => `trophy${index + 1}`);
 const CARD_COLUMNS = Array.from({ length: SLOTS }, (_, index) => `card${index + 1}`);
@@ -69,7 +96,83 @@ function empties(count) {
   return Array.from({ length: count }, () => null);
 }
 
-test("a publication without the lists writes nothing", async () => {
+/**
+ * D1 stand-in for one publication: records the statements and answers the two reads `upsertCard`
+ * makes (the account lookup, then the card it returns).
+ *
+ * @returns {{db: object, statements: Array<{sql: string, values: unknown[]}>}} The fake.
+ */
+function publicationDb() {
+  const statements = [];
+  return {
+    statements,
+    db: {
+      prepare(sql) {
+        const record = { sql, values: [] };
+        statements.push(record);
+        return {
+          bind(...values) {
+            record.values = values;
+            return {
+              async first() {
+                // No row yet: this publication creates the account.
+                if (/FROM users/.test(sql)) return null;
+                return { uuid: UUID, username: PUBLICATION.username };
+              },
+              async run() {
+                return { success: true };
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+}
+
+/**
+ * Keeps the statements that write the favourites.
+ *
+ * @param {Array<{sql: string}>} statements - Statements of one publication.
+ * @returns {Array<{sql: string, values: unknown[]}>} The `favorite` writes, in order.
+ */
+function favouriteWrites(statements) {
+  return statements.filter((statement) => /INSERT INTO favorite/.test(statement.sql));
+}
+
+test("a publication without the lists writes no favourite row", async () => {
+  const { db, statements } = publicationDb();
+
+  await upsertCard(db, PUBLICATION);
+
+  // The card itself is published: only the favourites are left alone.
+  assert.ok(statements.some(({ sql }) => /INSERT INTO cards/.test(sql)));
+  assert.equal(favouriteWrites(statements).length, 0);
+});
+
+test("a publication with an explicit empty list clears that family only", async () => {
+  const { db, statements } = publicationDb();
+
+  await upsertCard(db, { ...PUBLICATION, favorite_cards: [] });
+
+  const writes = favouriteWrites(statements);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writtenColumns(writes[0].sql), CARD_COLUMNS);
+  assert.deepEqual(writes[0].values, [UUID, ...empties(SLOTS)]);
+});
+
+test("a publication with one family leaves the other alone", async () => {
+  const { db, statements } = publicationDb();
+
+  await upsertCard(db, { ...PUBLICATION, favorite_trophies: ["A1_completion_bronze"] });
+
+  const writes = favouriteWrites(statements);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writtenColumns(writes[0].sql), TROPHY_COLUMNS);
+  assert.deepEqual(writes[0].values, [UUID, "A1_completion_bronze", ...empties(SLOTS - 1)]);
+});
+
+test("the service writes nothing when both families are absent", async () => {
   // What `POST /cards` forwards when the two fields are absent from the body. Any statement here
   // is the old bug: it would either clear both families or store empty slots.
   const db = fakeDb();

@@ -1,6 +1,10 @@
 import { handleAdminRequest } from "./adminService";
 import { getCardsByUuids, UpsertCardInput, upsertCard } from "./cardService";
-import { normalizeFavoriteList, readFavoritesByUuids } from "./favoriteService";
+import {
+  normalizeBinderCode,
+  normalizeFavoriteList,
+  readFavoritesByUuids,
+} from "./favoriteService";
 import { handleLikesRequest } from "./likeService";
 import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
@@ -136,6 +140,16 @@ function validateUpsertCardPayload(
     };
   }
 
+  // The binder code is opaque to the worker: only its shape (URL-safe Base64) and its length are
+  // checked, the game is the one that reads it back.
+  const binderCode = normalizeBinderCode(b.binder_code);
+  if (binderCode === null) {
+    return {
+      ok: false,
+      error: "Le champ 'binder_code' doit être un code de binder valide.",
+    };
+  }
+
   return {
     ok: true,
     data: {
@@ -163,6 +177,7 @@ function validateUpsertCardPayload(
       points: b.points as number,
       favorite_cards: favoriteCards,
       favorite_trophies: favoriteTrophies,
+      binder_code: binderCode,
     },
   };
 }
