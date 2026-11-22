@@ -1,5 +1,6 @@
 import { handleAdminRequest } from "./adminService";
 import { getCardsByUuids, UpsertCardInput, upsertCard } from "./cardService";
+import { normalizeFavoriteList, readFavoritesByUuids } from "./favoriteService";
 import { handleLikesRequest } from "./likeService";
 import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
@@ -119,6 +120,22 @@ function validateUpsertCardPayload(
     };
   }
 
+  const favoriteCards = normalizeFavoriteList(b.favorite_cards);
+  if (favoriteCards === null) {
+    return {
+      ok: false,
+      error: "Le champ 'favorite_cards' doit être une liste d'au plus 7 clés de carte.",
+    };
+  }
+
+  const favoriteTrophies = normalizeFavoriteList(b.favorite_trophies);
+  if (favoriteTrophies === null) {
+    return {
+      ok: false,
+      error: "Le champ 'favorite_trophies' doit être une liste d'au plus 7 identifiants de trophée.",
+    };
+  }
+
   return {
     ok: true,
     data: {
@@ -144,6 +161,8 @@ function validateUpsertCardPayload(
       block_mined: b.block_mined as number,
       picks: b.picks as number,
       points: b.points as number,
+      favorite_cards: favoriteCards,
+      favorite_trophies: favoriteTrophies,
     },
   };
 }
@@ -191,11 +210,16 @@ export default {
         return jsonResponse(likeResult.body, likeResult.status);
       }
 
+      // `favorites` rides along with the cards: the Follow List gets the pinned cards and trophies
+      // of every followed player in the very batch read it already makes.
       if (request.method === "GET" && path === "/cards") {
         const rawUuids = url.searchParams.get("uuids") ?? "";
         const uuidList = rawUuids.split(",");
-        const cards = await getCardsByUuids(env.DB, uuidList);
-        return jsonResponse({ cards });
+        const [cards, favorites] = await Promise.all([
+          getCardsByUuids(env.DB, uuidList),
+          readFavoritesByUuids(env.DB, uuidList),
+        ]);
+        return jsonResponse({ cards, favorites });
       }
 
       if (request.method === "POST" && path === "/cards/batch") {
@@ -220,8 +244,11 @@ export default {
           );
         }
 
-        const cards = await getCardsByUuids(env.DB, uuids);
-        return jsonResponse({ cards });
+        const [cards, favorites] = await Promise.all([
+          getCardsByUuids(env.DB, uuids),
+          readFavoritesByUuids(env.DB, uuids),
+        ]);
+        return jsonResponse({ cards, favorites });
       }
 
       if ((request.method === "POST" || request.method === "PUT") && path === "/cards") {

@@ -30,6 +30,10 @@ export interface UpsertCardInput {
   block_mined: number;
   picks: number;
   points: number;
+  /** Favourite collection keys (`<cardId>_<style>`), up to seven, in profile order. */
+  favorite_cards?: string[];
+  /** Featured trophy ids, up to seven, in profile order. */
+  favorite_trophies?: string[];
 }
 
 /**

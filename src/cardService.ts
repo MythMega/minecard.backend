@@ -1,3 +1,5 @@
+import { writeFavorites } from "./favoriteService";
+
 export interface UpsertCardInput {
   uuid: string;
   auth_code: string;
@@ -21,6 +23,10 @@ export interface UpsertCardInput {
   block_mined: number;
   picks: number;
   points: number;
+  /** Favourite collection keys (`<cardId>_<style>`), up to seven, in profile order. */
+  favorite_cards?: string[];
+  /** Featured trophy ids, up to seven, in profile order. */
+  favorite_trophies?: string[];
 }
 
 export interface PublicCard {
@@ -180,6 +186,13 @@ export async function upsertCard(
       input.points
     )
     .run();
+
+  // The favourites travel with the card: a followed player gets them in the same batch read, so
+  // the Follow List never needs a second route for them.
+  await writeFavorites(db, input.uuid, {
+    trophies: input.favorite_trophies ?? [],
+    cards: input.favorite_cards ?? [],
+  });
 
   const card = await getCardByUuid(db, input.uuid);
   if (!card) {
