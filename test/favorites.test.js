@@ -18,10 +18,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { upsertCard } from "../src/cardService.ts";
-import { normalizeFavoriteList, writeFavorites } from "../src/favoriteService.ts";
+import {
+  normalizeBinderCode,
+  normalizeFavoriteList,
+  writeFavorites,
+} from "../src/favoriteService.ts";
 
 const UUID = "6f9619ff-8b86-d011-b42d-00cf4fc964ff";
 const SLOTS = 7;
+
+/** Share code of a binder, shaped like the URL-safe Base64 the game produces. */
+const BINDER_CODE = "eJyNjt0KwjAMhV8l5LpDbdeusLeQ3m";
 
 /** Body of a `POST /cards` without any favourite list, as the client sends it on a first day. */
 const PUBLICATION = {
@@ -170,6 +177,42 @@ test("a publication with one family leaves the other alone", async () => {
   assert.equal(writes.length, 1);
   assert.deepEqual(writtenColumns(writes[0].sql), TROPHY_COLUMNS);
   assert.deepEqual(writes[0].values, [UUID, "A1_completion_bronze", ...empties(SLOTS - 1)]);
+});
+
+test("a publication with a binder code stores it", async () => {
+  const { db, statements } = publicationDb();
+
+  await upsertCard(db, { ...PUBLICATION, binder_code: BINDER_CODE });
+
+  const writes = favouriteWrites(statements);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writtenColumns(writes[0].sql), ["binder_code"]);
+  assert.deepEqual(writes[0].values, [UUID, BINDER_CODE]);
+});
+
+test("an explicit empty binder code clears it", async () => {
+  const { db, statements } = publicationDb();
+
+  await upsertCard(db, { ...PUBLICATION, binder_code: "" });
+
+  const writes = favouriteWrites(statements);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].values, [UUID, null]);
+});
+
+test("an absent binder code is not normalized into an empty one", () => {
+  assert.equal(normalizeBinderCode(undefined), undefined);
+  assert.equal(normalizeBinderCode(null), undefined);
+});
+
+test("a binder code is trimmed and only accepts URL-safe Base64", () => {
+  assert.equal(normalizeBinderCode(" abc_-123 "), "abc_-123");
+  // An explicit empty code is the way to unpin the binder.
+  assert.equal(normalizeBinderCode(""), "");
+  assert.equal(normalizeBinderCode("a b"), null);
+  assert.equal(normalizeBinderCode("a+b/c="), null);
+  assert.equal(normalizeBinderCode(42), null);
+  assert.equal(normalizeBinderCode("a".repeat(8193)), null);
 });
 
 test("the service writes nothing when both families are absent", async () => {

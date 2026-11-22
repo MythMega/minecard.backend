@@ -8,7 +8,9 @@
 -- Reference: `src/favoriteService.ts`.
 --
 -- This script is idempotent (`IF NOT EXISTS`): running it twice never loses a
--- favourite. It only depends on the `users` table of `01-create.sql`, because a
+-- favourite. A database created BEFORE `binder_code` existed keeps its table
+-- untouched by it, so it needs the column once:
+--   npx wrangler d1 execute minecard-db --remote --command="ALTER TABLE favorite ADD COLUMN binder_code TEXT" It only depends on the `users` table of `01-create.sql`, because a
 -- player only has favourites once they have an online account (a row in
 -- `users`, created by the first card publication or the first online save).
 --
