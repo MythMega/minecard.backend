@@ -1,6 +1,7 @@
 // The extension is explicit: Node runs this module in the tests (`npm test`), and it needs one
 // (see `allowImportingTsExtensions`). The worker bundles it exactly the same way.
 import { writeFavorites } from "./favoriteService.ts";
+import { writeWishlist } from "./wishlistService.ts";
 
 export interface UpsertCardInput {
   uuid: string;
@@ -31,6 +32,8 @@ export interface UpsertCardInput {
   favorite_trophies?: string[];
   /** Share code of the binder the profile pins on its card (opaque to the worker). */
   binder_code?: string;
+  /** Collection keys of the wishlist, up to ten, in display order. */
+  wishlist_cards?: string[];
 }
 
 export interface PublicCard {
@@ -217,6 +220,11 @@ export async function upsertCard(
     cards: input.favorite_cards,
     binder: input.binder_code,
   });
+
+  // The wishlist travels with the card too, in its own table: it is what a followed player reads
+  // to favour the cards the owner hopes to receive, in the friend dialog and in a trade. Same rule
+  // as the favourites: a payload WITHOUT the field writes nothing.
+  await writeWishlist(db, input.uuid, input.wishlist_cards);
 
   const card = await getCardByUuid(db, input.uuid);
   if (!card) {

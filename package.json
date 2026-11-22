@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",
-    "test": "node --experimental-strip-types --test test/favorites.test.js",
+    "test": "node --experimental-strip-types --test test/favorites.test.js test/wishlist.test.js",
     "test:live": "node test/live/worker.live.mjs",
     "db:init": "npx wrangler d1 execute minecard-db --file=./schema.sql --remote",
     "db:init:local": "npx wrangler d1 execute minecard-db --file=./schema.sql --local"

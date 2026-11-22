@@ -58,6 +58,7 @@ const BACKUP_TABLES = [
   "trades",
   "saves",
   "favorite",
+  "wishlist",
   "like_daily_target",
 ] as const;
 
@@ -70,6 +71,7 @@ const BACKUP_TABLES = [
  */
 const OPTIONAL_BACKUP_TABLES: ReadonlySet<string> = new Set([
   "favorite",
+  "wishlist",
   "likes",
   "like_daily_target",
 ]);

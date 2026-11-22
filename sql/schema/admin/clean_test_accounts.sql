@@ -39,6 +39,7 @@ SELECT 'users' AS table_name, COUNT(*) AS rows_to_delete FROM users WHERE uuid I
 SELECT 'cards' AS table_name, COUNT(*) AS rows_to_delete FROM cards WHERE uuid IN (SELECT uuid FROM _test_accounts);
 SELECT 'likes' AS table_name, COUNT(*) AS rows_to_delete FROM likes WHERE uuid IN (SELECT uuid FROM _test_accounts);
 SELECT 'favorite' AS table_name, COUNT(*) AS rows_to_delete FROM favorite WHERE uuid IN (SELECT uuid FROM _test_accounts);
+SELECT 'wishlist' AS table_name, COUNT(*) AS rows_to_delete FROM wishlist WHERE uuid IN (SELECT uuid FROM _test_accounts);
 SELECT 'saves' AS table_name, COUNT(*) AS rows_to_delete FROM saves WHERE uuid IN (SELECT uuid FROM _test_accounts);
 SELECT 'trades' AS table_name, COUNT(*) AS rows_to_delete FROM trades
  WHERE initiator_uuid IN (SELECT uuid FROM _test_accounts) OR responder_uuid IN (SELECT uuid FROM _test_accounts);
@@ -51,6 +52,7 @@ DELETE FROM like_daily_target
 
 DELETE FROM likes WHERE uuid IN (SELECT uuid FROM _test_accounts);
 DELETE FROM favorite WHERE uuid IN (SELECT uuid FROM _test_accounts);
+DELETE FROM wishlist WHERE uuid IN (SELECT uuid FROM _test_accounts);
 DELETE FROM saves WHERE uuid IN (SELECT uuid FROM _test_accounts);
 
 DELETE FROM trades

@@ -8,6 +8,7 @@ import {
 import { handleLikesRequest } from "./likeService";
 import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
+import { normalizeWishlist, readWishlistsByUuids } from "./wishlistService";
 
 export interface Env {
   DB: D1Database;
@@ -140,6 +141,16 @@ function validateUpsertCardPayload(
     };
   }
 
+  // The wishlist is optional (an older client never sends it) and always cleared by an explicit
+  // empty list: the game publishes it with every card, so a removal online is immediate.
+  const wishlistCards = normalizeWishlist(b.wishlist_cards);
+  if (wishlistCards === null) {
+    return {
+      ok: false,
+      error: "Le champ 'wishlist_cards' doit être une liste d'au plus 10 clés de carte.",
+    };
+  }
+
   // The binder code is opaque to the worker: only its shape (URL-safe Base64) and its length are
   // checked, the game is the one that reads it back.
   const binderCode = normalizeBinderCode(b.binder_code);
@@ -178,6 +189,7 @@ function validateUpsertCardPayload(
       favorite_cards: favoriteCards,
       favorite_trophies: favoriteTrophies,
       binder_code: binderCode,
+      wishlist_cards: wishlistCards,
     },
   };
 }
@@ -230,11 +242,12 @@ export default {
       if (request.method === "GET" && path === "/cards") {
         const rawUuids = url.searchParams.get("uuids") ?? "";
         const uuidList = rawUuids.split(",");
-        const [cards, favorites] = await Promise.all([
+        const [cards, favorites, wishlists] = await Promise.all([
           getCardsByUuids(env.DB, uuidList),
           readFavoritesByUuids(env.DB, uuidList),
+          readWishlistsByUuids(env.DB, uuidList),
         ]);
-        return jsonResponse({ cards, favorites });
+        return jsonResponse({ cards, favorites, wishlists });
       }
 
       if (request.method === "POST" && path === "/cards/batch") {
@@ -259,11 +272,12 @@ export default {
           );
         }
 
-        const [cards, favorites] = await Promise.all([
+        const [cards, favorites, wishlists] = await Promise.all([
           getCardsByUuids(env.DB, uuids),
           readFavoritesByUuids(env.DB, uuids),
+          readWishlistsByUuids(env.DB, uuids),
         ]);
-        return jsonResponse({ cards, favorites });
+        return jsonResponse({ cards, favorites, wishlists });
       }
 
       if ((request.method === "POST" || request.method === "PUT") && path === "/cards") {

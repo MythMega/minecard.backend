@@ -3,6 +3,9 @@
 -- Remplace '11111111-1111-4111-8111-111111111111' par l'UUID cible
 -- ==========================================
 DELETE FROM cards WHERE uuid = '11111111-1111-4111-8111-111111111111';
+-- Wishlist and favourites of the published trainer card.
+DELETE FROM wishlist WHERE uuid = '11111111-1111-4111-8111-111111111111';
+DELETE FROM favorite WHERE uuid = '11111111-1111-4111-8111-111111111111';
 -- Online backups before the account row they reference.
 DELETE FROM saves WHERE uuid = '11111111-1111-4111-8111-111111111111';
 DELETE FROM users WHERE uuid = '11111111-1111-4111-8111-111111111111';

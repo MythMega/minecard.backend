@@ -11,6 +11,7 @@
 DELETE FROM like_daily_target;
 DELETE FROM likes;
 DELETE FROM favorite;
+DELETE FROM wishlist;
 DELETE FROM trades;
 DELETE FROM cards;
 DELETE FROM saves;

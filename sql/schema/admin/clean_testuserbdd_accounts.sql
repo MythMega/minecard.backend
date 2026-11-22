@@ -8,8 +8,8 @@
 -- THE RULE
 --   Every test account MUST contain `TESTUSERBDD` in its pseudo ("TESTUSERBDD_like1",
 --   "monTESTUSERBDD", ...). This script deletes every account whose pseudo contains it, with
---   everything the account owns: like counters and Spark bonus, favourites and binder, online
---   saves, trades, and the likes it gave today. Picking a real pseudo that contains the marker
+--   everything the account owns: like counters and Spark bonus, favourites and binder, wishlist,
+--   online saves, trades, and the likes it gave today. Picking a real pseudo that contains the marker
 --   would therefore delete a real account - the game warns about it before saving such a name.
 --
 --   The match is `LIKE '%TESTUSERBDD%'`: anywhere in the name, and case-insensitive for ASCII, so
@@ -39,6 +39,7 @@ SELECT 'users' AS table_name, COUNT(*) AS rows_to_delete FROM users WHERE uuid I
 SELECT 'cards' AS table_name, COUNT(*) AS rows_to_delete FROM cards WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 SELECT 'likes' AS table_name, COUNT(*) AS rows_to_delete FROM likes WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 SELECT 'favorite' AS table_name, COUNT(*) AS rows_to_delete FROM favorite WHERE uuid IN (SELECT uuid FROM _testuserbdd);
+SELECT 'wishlist' AS table_name, COUNT(*) AS rows_to_delete FROM wishlist WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 SELECT 'saves' AS table_name, COUNT(*) AS rows_to_delete FROM saves WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 SELECT 'trades' AS table_name, COUNT(*) AS rows_to_delete FROM trades
  WHERE initiator_uuid IN (SELECT uuid FROM _testuserbdd) OR responder_uuid IN (SELECT uuid FROM _testuserbdd);
@@ -51,6 +52,7 @@ DELETE FROM like_daily_target
 
 DELETE FROM likes WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 DELETE FROM favorite WHERE uuid IN (SELECT uuid FROM _testuserbdd);
+DELETE FROM wishlist WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 DELETE FROM saves WHERE uuid IN (SELECT uuid FROM _testuserbdd);
 
 DELETE FROM trades
