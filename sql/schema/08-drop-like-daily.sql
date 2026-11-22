@@ -1,0 +1,22 @@
+-- =============================================================================
+-- Drop the obsolete `like_daily` table - MineCards
+--
+-- Apply with:
+--   npx wrangler d1 execute minecard-db --file=./sql/schema/08-drop-like-daily.sql --remote
+--   npx wrangler d1 execute minecard-db --file=./sql/schema/08-drop-like-daily.sql --local
+--
+-- Reference: `sql/schema/05-likes.sql`, `sql/schema/07-like-everyone.sql`, `doc/likes.md`.
+--
+-- `like_daily` was keyed by `(liker_uuid, day)`: ONE like per player per day, to one friend, which
+-- made "like everyone" impossible. `07-like-everyone.sql` replaced it with `like_daily_target`
+-- (`liker_uuid, target_uuid, day`), and NOTHING reads or writes `like_daily` any more:
+--   - the worker only knows `like_daily_target` (`src/likeService.ts`);
+--   - the administration backup never included the likes tables (`adminService.BACKUP_TABLES`);
+--   - `admin/clear_all_datas.sql` wipes `like_daily_target`.
+--
+-- Running this script is therefore safe, and running it twice is safe too (`IF EXISTS`). Its only
+-- effect is to free the table: the rows it may hold are the likes of the first version of the rule,
+-- which was never in production.
+-- =============================================================================
+
+DROP TABLE IF EXISTS like_daily;

@@ -49,6 +49,8 @@ declare global {
     decode(input?: ArrayBuffer | Uint8Array): string;
   }
 
+  declare function btoa(data: string): string;
+
   interface URLSearchParams {
     get(name: string): string | null;
   }

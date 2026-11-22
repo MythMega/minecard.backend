@@ -8,7 +8,7 @@
 -- Children first, parents last: every row that references `users` goes before
 -- it, so the script works whether or not foreign keys are enforced.
 -- ==========================================
-DELETE FROM like_daily;
+DELETE FROM like_daily_target;
 DELETE FROM likes;
 DELETE FROM favorite;
 DELETE FROM trades;

@@ -13,11 +13,14 @@ npx wrangler d1 execute minecard-db --file=./sql/schema/05-likes.sql --remote
 npx wrangler d1 execute minecard-db --file=./sql/schema/05-likes.sql --local
 npx wrangler d1 execute minecard-db --file=./sql/schema/07-like-everyone.sql --remote
 npx wrangler d1 execute minecard-db --file=./sql/schema/07-like-everyone.sql --local
+npx wrangler d1 execute minecard-db --file=./sql/schema/08-drop-like-daily.sql --remote
+npx wrangler d1 execute minecard-db --file=./sql/schema/08-drop-like-daily.sql --local
 ```
 
 Les scripts sont idempotents et ne dépendent que de la table `users` de `01-create.sql`.
-`07-like-everyone.sql` crée `like_daily_target` (un like par ami et par jour) et y recopie
-l'historique de `like_daily`, qui reste en place mais n'est plus écrit.
+`07-like-everyone.sql` crée `like_daily_target` (un like par ami et par jour) ;
+`08-drop-like-daily.sql` supprime l'ancienne table `like_daily` (une seule ligne par joueur et par
+jour), que plus rien ne lit ni n'écrit. L'ordre 05 → 07 → 08 est celui d'une installation neuve.
 
 ## Routes
 

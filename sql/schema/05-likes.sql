@@ -11,6 +11,11 @@
 -- like. It depends on the `users` table of `01-create.sql` only, because a
 -- player can only be liked once they have an online account (a row in `users`,
 -- created by the first card publication or the first online save).
+--
+-- This script only creates `likes` (the counters of the RECEIVER). The daily
+-- quota lives in `07-like-everyone.sql`: one like per friend per UTC day, held
+-- by `like_daily_target`. The older `like_daily` table it used to create here
+-- was dropped by `08-drop-like-daily.sql`.
 -- =============================================================================
 
 -- One row per liked player: how many likes they received, and the fraction of
@@ -31,22 +36,3 @@ CREATE TABLE IF NOT EXISTS likes (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
-
--- One like per LIKER per UTC day: the primary key is the pair
--- (liker_uuid, day), so a second like the same day is refused by the database
--- itself, whatever the client sends. `target_uuid` records who received it,
--- which keeps the history auditable and lets the day be shown in the game.
-CREATE TABLE IF NOT EXISTS like_daily (
-  liker_uuid TEXT NOT NULL,
-  target_uuid TEXT NOT NULL,
-  day TEXT NOT NULL DEFAULT (date('now')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (liker_uuid, day),
-  CHECK (liker_uuid <> target_uuid),
-  FOREIGN KEY (liker_uuid) REFERENCES users(uuid) ON DELETE CASCADE,
-  FOREIGN KEY (target_uuid) REFERENCES users(uuid) ON DELETE CASCADE
-);
-
--- The day of a liker is read by the like route (to answer `liked_today`) and by
--- nothing else; the likes of a player are read by UUID through the primary key.
-CREATE INDEX IF NOT EXISTS idx_like_daily_target ON like_daily(target_uuid, day);

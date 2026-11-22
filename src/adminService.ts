@@ -25,9 +25,13 @@
  *   unknown table, unknown column, row of the wrong width or a non scalar value
  *   all answer 400 without touching the database. The tables are then emptied
  *   in one atomic batch (children first), and the rows are inserted in batches
- *   of `INSERT_ROWS_PER_BATCH` (each atomic, `users` before its children). A
- *   failure halfway leaves the earlier batches in place: send the same file
- *   again, it starts by emptying the tables.
+ *   of `INSERT_ROWS_PER_BATCH` (each atomic, `users` before its children).
+ *
+ *   A restore cannot be one transaction across batches, so the answer carries
+ *   `safety_backup`: the state of the database JUST BEFORE the rewrite, gzipped
+ *   and Base64-encoded, to POST back if a restore is interrupted. It is omitted
+ *   (`null`) above `MAX_SAFETY_BACKUP_BYTES`, where the operator should take a
+ *   `GET /admin/backup` first.
  *
  * Reference: `doc/admin-backup.md`.
  */
@@ -39,21 +43,36 @@ export const BACKUP_FORMAT = "minecards-backup";
 export const BACKUP_VERSION = 1;
 
 /**
- * Tables of the schema, in the order a restore inserts them: `cards`, `saves` and `favorite` point
- * at `users` through a foreign key, so the parent goes first.
+ * Tables of the schema, in the order a restore inserts them: `likes`, `cards`, `saves`, `favorite`
+ * and `like_daily_target` point at `users` through a foreign key, so the parent goes first.
  *
  * `favorite` carries the pinned cards and trophies of every trainer card: leaving it out of a
- * restore would keep rows of the previous database that no longer have an account.
+ * restore would keep rows of the previous database that no longer have an account. `likes` holds
+ * the counters and the Spark bonus, `like_daily_target` the likes already given today: leaving
+ * them out would reset what a restore is supposed to bring back.
  */
-const BACKUP_TABLES = ["users", "cards", "trades", "saves", "favorite"] as const;
+const BACKUP_TABLES = [
+  "users",
+  "likes",
+  "cards",
+  "trades",
+  "saves",
+  "favorite",
+  "like_daily_target",
+] as const;
 
 /**
  * Tables a dump may omit without being refused.
  *
- * `favorite` arrived after the first backups were in circulation: a dump written before it simply
- * has no favourites to restore, and refusing it would lose data the player still wants back.
+ * `favorite`, `likes` and `like_daily_target` arrived after the first backups were in circulation:
+ * a dump written before them simply has nothing to restore for those tables, and refusing it would
+ * lose the data the operator still wants back. Such a dump empties them, like any restore.
  */
-const OPTIONAL_BACKUP_TABLES: ReadonlySet<string> = new Set(["favorite"]);
+const OPTIONAL_BACKUP_TABLES: ReadonlySet<string> = new Set([
+  "favorite",
+  "likes",
+  "like_daily_target",
+]);
 
 /** Order that empties the database: children first, parents last. */
 const CLEAR_TABLES: readonly string[] = [...BACKUP_TABLES].reverse();
@@ -69,6 +88,9 @@ const MAX_RESTORE_ROWS = 200000;
 
 /** Rows per batch: keeps one D1 request small while staying atomic per chunk. */
 const INSERT_ROWS_PER_BATCH = 40;
+
+/** Largest pre-restore snapshot echoed in the answer, in gzipped bytes. */
+const MAX_SAFETY_BACKUP_BYTES = 4 * 1024 * 1024;
 
 /** A cell of the dump: what a restored row binds. */
 type BackupValue = string | number | null;
@@ -110,12 +132,14 @@ interface StreamBody {
 }
 
 function jsonResponse(data: unknown, status: number): Response {
+  // No CORS header: the administration API is called from the command line (see
+  // `doc/admin-backup.md`), never by a page. A `*` would let any web page read a backup that
+  // contains the auth code of every account, as soon as the key leaks.
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
-      "Access-Control-Allow-Origin": "*",
     },
   });
 }
@@ -188,30 +212,41 @@ async function readColumns(db: D1Database, table: string): Promise<string[]> {
 }
 
 /**
+ * Reads the whole database into a dump.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @returns {Promise<BackupFile|null>} The dump, or null when a table of the schema is missing.
+ */
+async function buildBackupFile(db: D1Database): Promise<BackupFile | null> {
+  const tables: BackupTable[] = [];
+
+  for (const name of BACKUP_TABLES) {
+    const columns = await readColumns(db, name);
+    if (columns.length === 0) return null;
+    const result = await db.prepare(`SELECT * FROM ${name}`).all<Record<string, BackupValue>>();
+    const rows = (result.results ?? []).map((row) => columns.map((column) => row[column] ?? null));
+    tables.push({ name, columns, rows });
+  }
+
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    exported_at: new Date().toISOString(),
+    tables,
+  };
+}
+
+/**
  * `GET /admin/backup` - the whole database as one gzipped JSON file.
  *
  * @param {D1Database} db - D1 binding.
  * @returns {Promise<Response>} The download.
  */
 async function exportBackup(db: D1Database): Promise<Response> {
-  const tables: BackupTable[] = [];
-
-  for (const name of BACKUP_TABLES) {
-    const columns = await readColumns(db, name);
-    if (columns.length === 0) {
-      return jsonResponse({ error: `La table '${name}' est introuvable.` }, 500);
-    }
-    const result = await db.prepare(`SELECT * FROM ${name}`).all<Record<string, BackupValue>>();
-    const rows = (result.results ?? []).map((row) => columns.map((column) => row[column] ?? null));
-    tables.push({ name, columns, rows });
+  const file = await buildBackupFile(db);
+  if (!file) {
+    return jsonResponse({ error: "Une table du schéma est introuvable dans la base." }, 500);
   }
-
-  const file: BackupFile = {
-    format: BACKUP_FORMAT,
-    version: BACKUP_VERSION,
-    exported_at: new Date().toISOString(),
-    tables,
-  };
 
   const archive = await gzip(JSON.stringify(file));
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -222,9 +257,24 @@ async function exportBackup(db: D1Database): Promise<Response> {
       "Content-Type": "application/gzip",
       "Content-Disposition": `attachment; filename="minecard-backup-${stamp}.json.gz"`,
       "Cache-Control": "no-store",
-      "Access-Control-Allow-Origin": "*",
     },
   });
+}
+
+/**
+ * Encodes bytes as Base64, in chunks so a large dump does not overflow the call stack.
+ *
+ * @param {ArrayBuffer} bytes - Raw bytes.
+ * @returns {string} The Base64 text.
+ */
+function toBase64(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes);
+  const chunk = 4096;
+  let binary = "";
+  for (let index = 0; index < view.length; index += chunk) {
+    binary += String.fromCharCode(...view.subarray(index, index + chunk));
+  }
+  return btoa(binary);
 }
 
 /**
@@ -438,6 +488,16 @@ async function restoreBackup(request: Request, db: D1Database): Promise<Response
     return jsonResponse({ error: validation.error }, 400);
   }
 
+  // Snapshot BEFORE the first DELETE: an interrupted restore can be undone by sending this back.
+  const snapshot = await buildBackupFile(db);
+  let safetyBackup: string | null = null;
+  let safetyBytes = 0;
+  if (snapshot) {
+    const archive = await gzip(JSON.stringify(snapshot));
+    safetyBytes = archive.byteLength;
+    if (safetyBytes <= MAX_SAFETY_BACKUP_BYTES) safetyBackup = toBase64(archive);
+  }
+
   const startedAt = Date.now();
   const counts = await writeBackup(db, validation.file);
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
@@ -451,6 +511,9 @@ async function restoreBackup(request: Request, db: D1Database): Promise<Response
       tables: counts,
       rows: total,
       duration_ms: Date.now() - startedAt,
+      // Gzipped Base64 of the database as it was before the rewrite; null when too large.
+      safety_backup: safetyBackup,
+      safety_backup_bytes: safetyBytes,
     },
     200
   );

@@ -41,6 +41,27 @@ const MAX_LIKE_TARGETS = 100;
 /** Bonus added to the liked player by one like. */
 const LIKE_BONUS = 0.1;
 
+/**
+ * Reservation of the day. The primary key of `like_daily_target` refuses a second like to the same
+ * friend, whatever the client sends, and `meta.changes` tells whether this one was the first.
+ */
+const RESERVE_LIKE_SQL = `INSERT INTO like_daily_target (liker_uuid, target_uuid, day)
+       VALUES (?, ?, date('now'))
+       ON CONFLICT(liker_uuid, target_uuid, day) DO NOTHING`;
+
+/** Counter of the RECEIVER: one more like, one more tenth of a Spark, row created on the first. */
+const COUNT_LIKE_SQL = `INSERT INTO likes (uuid, like_count, bonus_from_like)
+       VALUES (?, 1, ?)
+       ON CONFLICT(uuid) DO UPDATE SET
+         like_count = like_count + 1,
+         bonus_from_like = bonus_from_like + ?,
+         updated_at = datetime('now')`;
+
+/** One entry of a `db.batch()` result, reduced to the row count it changed. */
+interface BatchStepResult {
+  meta?: { changes?: number };
+}
+
 /** UUID shape accepted by every other route of the worker. */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -110,29 +131,6 @@ async function authenticate(db: D1Database, uuid: string, authCode: string): Pro
 }
 
 /**
- * Tells whether the player already gave their like of the UTC day to one friend.
- *
- * @param {D1Database} db - D1 binding.
- * @param {string} likerUuid - Liker UUID.
- * @param {string} targetUuid - Liked friend.
- * @returns {Promise<boolean>} True when that friend was already liked today.
- */
-async function hasLikedToday(
-  db: D1Database,
-  likerUuid: string,
-  targetUuid: string
-): Promise<boolean> {
-  const row = await db
-    .prepare(
-      `SELECT liker_uuid FROM like_daily_target
-       WHERE liker_uuid = ? AND target_uuid = ? AND day = date('now')`
-    )
-    .bind(likerUuid, targetUuid)
-    .first<{ liker_uuid: string }>();
-  return Boolean(row);
-}
-
-/**
  * Lists the friends one player already liked today.
  *
  * The game paints a like button per friend from it, so the daily state arrives with the count of
@@ -192,27 +190,54 @@ async function giveLike(
   targetUuid: string
 ): Promise<"liked" | "already"> {
   const reserved = await db
-    .prepare(
-      `INSERT INTO like_daily_target (liker_uuid, target_uuid, day)
-       VALUES (?, ?, date('now'))
-       ON CONFLICT(liker_uuid, target_uuid, day) DO NOTHING`
-    )
+    .prepare(RESERVE_LIKE_SQL)
     .bind(likerUuid, targetUuid)
     .run();
   if ((reserved.meta?.changes ?? 0) === 0) return "already";
 
   await db
-    .prepare(
-      `INSERT INTO likes (uuid, like_count, bonus_from_like)
-       VALUES (?, 1, ?)
-       ON CONFLICT(uuid) DO UPDATE SET
-         like_count = like_count + 1,
-         bonus_from_like = bonus_from_like + ?,
-         updated_at = datetime('now')`
-    )
+    .prepare(COUNT_LIKE_SQL)
     .bind(targetUuid, LIKE_BONUS, LIKE_BONUS)
     .run();
   return "liked";
+}
+
+/**
+ * Gives the like of the UTC day to several friends in TWO D1 round trips.
+ *
+ * One request per friend cost 2 statements each, in series: 30 friends took 3.6 s from the client.
+ * `db.batch()` sends the days as one transaction and returns one result per target, so the split
+ * between `liked` and `already` comes from the database itself, exactly like `giveLike`.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string} likerUuid - Authenticated liker.
+ * @param {string[]} targets - Friends to like (validated, another account, no duplicate).
+ * @returns {Promise<{liked: string[], already: string[]}>} What happened, in the order received.
+ */
+async function giveLikes(
+  db: D1Database,
+  likerUuid: string,
+  targets: string[]
+): Promise<{ liked: string[]; already: string[] }> {
+  if (targets.length === 0) return { liked: [], already: [] };
+
+  const reservations = (await db.batch(
+    targets.map((target) => db.prepare(RESERVE_LIKE_SQL).bind(likerUuid, target))
+  )) as BatchStepResult[];
+
+  const liked: string[] = [];
+  const already: string[] = [];
+  targets.forEach((target, index) => {
+    if ((reservations[index]?.meta?.changes ?? 0) > 0) liked.push(target);
+    else already.push(target);
+  });
+
+  if (liked.length > 0) {
+    await db.batch(
+      liked.map((target) => db.prepare(COUNT_LIKE_SQL).bind(target, LIKE_BONUS, LIKE_BONUS))
+    );
+  }
+  return { liked, already };
 }
 
 /**
@@ -458,17 +483,12 @@ async function likeBatch(
     }
   }
 
-  const liked: string[] = [];
-  const already: string[] = [];
-  const unknown: string[] = [];
-  for (const target of candidates) {
-    if (!known.has(target)) {
-      unknown.push(target);
-      continue;
-    }
-    if ((await giveLike(db, likerUuid, target)) === "liked") liked.push(target);
-    else already.push(target);
-  }
+  const unknown = candidates.filter((target) => !known.has(target));
+  const { liked, already } = await giveLikes(
+    db,
+    likerUuid,
+    candidates.filter((target) => known.has(target))
+  );
 
   return {
     status: 200,

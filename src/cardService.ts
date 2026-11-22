@@ -138,11 +138,29 @@ export async function upsertCard(
   let action: "created" | "updated";
 
   if (!existingUser) {
-    await db
-      .prepare("INSERT INTO users (uuid, auth_code) VALUES (?, ?)")
+    // Two devices publishing the same fresh UUID at the same moment must not fail: the second
+    // insert is ignored, and the code the winner stored is compared below. Without this, D1 throws
+    // on the `users` primary key and the client gets a 500 instead of its 403/200.
+    const inserted = await db
+      .prepare("INSERT INTO users (uuid, auth_code) VALUES (?, ?) ON CONFLICT(uuid) DO NOTHING")
       .bind(input.uuid, input.auth_code)
       .run();
-    action = "created";
+
+    if ((inserted.meta?.changes ?? 0) === 0) {
+      const winner = await db
+        .prepare("SELECT uuid, auth_code FROM users WHERE uuid = ?")
+        .bind(input.uuid)
+        .first<ExistingUserRow>();
+      if (winner?.auth_code !== input.auth_code) {
+        return {
+          status: 403,
+          error: "Authentification invalide pour cet UUID.",
+        };
+      }
+      action = "updated";
+    } else {
+      action = "created";
+    }
   } else {
     if (existingUser.auth_code !== input.auth_code) {
       return {

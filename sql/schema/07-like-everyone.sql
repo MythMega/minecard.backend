@@ -12,9 +12,10 @@
 -- per FRIEND per day, held by the primary key of `like_daily_target`. The batch route
 -- (`POST /likes/batch`) writes it for every followed player in one request.
 --
--- This script is idempotent: `IF NOT EXISTS` for the table and the index, and the copy of the
--- history uses `INSERT OR IGNORE`, so running it twice changes nothing. `like_daily` is kept as the
--- history written by the previous version; nothing writes to it any more.
+-- This script is idempotent: `IF NOT EXISTS` for the table and the index, and it reads no other
+-- table, so it can be applied whatever the state of the database. The likes feature never reached
+-- production, so the single likes recorded by the first version of the rule are not copied;
+-- `08-drop-like-daily.sql` then removes `like_daily` entirely.
 -- =============================================================================
 
 -- One row per (liker, friend, day): the database itself refuses a second like of the same friend
@@ -29,11 +30,6 @@ CREATE TABLE IF NOT EXISTS like_daily_target (
   FOREIGN KEY (liker_uuid) REFERENCES users(uuid) ON DELETE CASCADE,
   FOREIGN KEY (target_uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
-
--- Carries the like already given by the previous version, so the "likes sent" counter and the
--- medals do not restart at zero on an existing account.
-INSERT OR IGNORE INTO like_daily_target (liker_uuid, target_uuid, day, created_at)
-  SELECT liker_uuid, target_uuid, day, created_at FROM like_daily;
 
 -- The "likes sent" counter of one player (`GET /likes?uuid=…&auth_code=…`) reads by liker.
 CREATE INDEX IF NOT EXISTS idx_like_daily_target_target ON like_daily_target(target_uuid, day);

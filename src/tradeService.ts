@@ -209,23 +209,15 @@ async function authenticate(db: D1Database, uuid: string, authCode: string): Pro
  * @returns {Promise<void>} Resolves once the sweep is done.
  */
 async function expireOverdueTrades(db: D1Database): Promise<void> {
-  const overdue = await db
+  // One statement for the whole sweep: the WHERE clause repeats the guards of the old per-row
+  // update (a trade answered at the same moment no longer matches), and nothing else is read.
+  await db
     .prepare(
-      `SELECT * FROM trades
+      `UPDATE trades
+       SET status = 'expired', closed_at = datetime('now'), updated_at = datetime('now')
        WHERE status IN ('pending', 'proposed') AND expires_at <= datetime('now')`
     )
-    .all<TradeRow>();
-
-  for (const trade of overdue.results ?? []) {
-    const closed = await db
-      .prepare(
-        `UPDATE trades
-         SET status = 'expired', closed_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ? AND status IN ('pending', 'proposed')`
-      )
-          .bind(trade.id)
     .run();
-  }
 }
 
 /**

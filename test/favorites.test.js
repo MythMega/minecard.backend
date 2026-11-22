@@ -74,7 +74,7 @@ function fakeDb() {
           statements.push({ sql, values });
           return {
             async run() {
-              return { success: true };
+              return { success: true, meta: { changes: 1 } };
             },
           };
         },
@@ -127,7 +127,7 @@ function publicationDb() {
                 return { uuid: UUID, username: PUBLICATION.username };
               },
               async run() {
-                return { success: true };
+                return { success: true, meta: { changes: 1 } };
               },
             };
           },
@@ -282,6 +282,28 @@ test("an explicit empty list stays empty", () => {
   assert.deepEqual(normalizeFavoriteList(["", "   "]), []);
 });
 
+test("a concurrent first publication that lost the insert keeps the account", async () => {
+  // Two devices publishing the same fresh UUID at once: the second INSERT is ignored by D1
+  // (`meta.changes: 0`) and the code the winner stored is compared. It used to throw on the
+  // `users` primary key, which reached the client as a 500.
+  const db = racePublicationDb(PUBLICATION.auth_code);
+  const result = await upsertCard(db, PUBLICATION);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.action, "updated");
+  assert.match(
+    db.statements.find((statement) => /INSERT INTO users/.test(statement.sql)).sql,
+    /ON CONFLICT\(uuid\) DO NOTHING/
+  );
+});
+
+test("a concurrent publication with another code is refused", async () => {
+  const db = racePublicationDb("ZZZZZZZZZZZZZZZZ");
+  const result = await upsertCard(db, PUBLICATION);
+
+  assert.equal(result.status, 403);
+});
+
 test("ids are trimmed, de-duplicated and bounded", () => {
   assert.deepEqual(normalizeFavoriteList([" c1 ", "c1", "c2"]), ["c1", "c2"]);
   assert.equal(normalizeFavoriteList("c1"), null);
@@ -292,3 +314,42 @@ test("ids are trimmed, de-duplicated and bounded", () => {
     null
   );
 });
+
+/**
+ * D1 stand-in for the race of two first publications of the same UUID: the account lookup sees
+ * nothing, the INSERT is ignored because the other request won, and the next lookup reads the code
+ * that request stored.
+ *
+ * @param {string} storedCode - Code the winning publication stored.
+ * @returns {{statements: Array<{sql: string, values: unknown[]}>, prepare: Function}} The fake.
+ */
+function racePublicationDb(storedCode) {
+  const statements = [];
+  let usersReads = 0;
+  return {
+    statements,
+    prepare(sql) {
+      const record = { sql, values: [] };
+      statements.push(record);
+      return {
+        bind(...values) {
+          record.values = values;
+          return {
+            async first() {
+              if (/FROM users/.test(sql)) {
+                usersReads += 1;
+                return usersReads === 1 ? null : { uuid: UUID, auth_code: storedCode };
+              }
+              return { uuid: UUID, username: PUBLICATION.username };
+            },
+            async run() {
+              return /INSERT INTO users/.test(sql)
+                ? { success: true, meta: { changes: 0 } }
+                : { success: true, meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+  };
+}
