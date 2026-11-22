@@ -107,6 +107,10 @@ de Wrangler.
 
 ## Notes
 
+- **Comptes de test** : ils doivent contenir `TESTUSERBDD` dans leur pseudo. Le nettoyage ciblé est
+  `sql/schema/admin/clean_testuserbdd_accounts.sql` (voir `doc/test-accounts.md`) ;
+  `sql/schema/admin/clean_test_accounts.sql` reste pour les anciens comptes `E2E `/`TEST `. Aucun
+  raccourci npm ni route HTTP : ces scripts se lancent à la main.
 - L'API d'administration n'envoie **aucun en-tête CORS** : elle s'utilise en ligne de commande, pas
 depuis une page web. Une sauvegarde contient les `auth_code` de tous les comptes ;
 `Access-Control-Allow-Origin: *` aurait laissé n'importe quel site lire cette réponse.
