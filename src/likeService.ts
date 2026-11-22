@@ -22,15 +22,21 @@
  *   Follow List shows the hearts of its friends without ever touching their
  *   bonus. `GET /likes?uuids=a,b,c` answers the whole list in one request.
  *
- * ONE LIKE PER LIKER PER DAY
- *   Enforced by `like_daily` (primary key `liker_uuid, day`) and by the UTC day
- *   of the SERVER clock, never by the device one.
+ * ONE LIKE PER FRIEND PER DAY
+ *   Enforced by `like_daily_target` (primary key `liker_uuid, target_uuid, day`)
+ *   and by the UTC day of the SERVER clock, never by the device one. A player
+ *   can therefore like their whole Follow List, once each: `POST /likes/batch`
+ *   does it in ONE request instead of one per friend.
  *
- * Reference: `sql/schema/05-likes.sql` and `doc/likes.md`.
+ * Reference: `sql/schema/05-likes.sql`, `sql/schema/07-like-everyone.sql` and
+ * `doc/likes.md`.
  */
 
 /** Maximum number of UUIDs a batch read answers. Mirrors the card batch read. */
 const MAX_LIKE_BATCH = 100;
+
+/** Maximum number of friends one batch like accepts. */
+const MAX_LIKE_TARGETS = 100;
 
 /** Bonus added to the liked player by one like. */
 const LIKE_BONUS = 0.1;
@@ -104,18 +110,137 @@ async function authenticate(db: D1Database, uuid: string, authCode: string): Pro
 }
 
 /**
- * Tells whether the player already used the like of the current UTC day.
+ * Tells whether the player already gave their like of the UTC day to one friend.
  *
  * @param {D1Database} db - D1 binding.
- * @param {string} uuid - Liker UUID.
- * @returns {Promise<boolean>} True when a like was already given today.
+ * @param {string} likerUuid - Liker UUID.
+ * @param {string} targetUuid - Liked friend.
+ * @returns {Promise<boolean>} True when that friend was already liked today.
  */
-async function hasLikedToday(db: D1Database, uuid: string): Promise<boolean> {
+async function hasLikedToday(
+  db: D1Database,
+  likerUuid: string,
+  targetUuid: string
+): Promise<boolean> {
   const row = await db
-    .prepare("SELECT liker_uuid FROM like_daily WHERE liker_uuid = ? AND day = date('now')")
-    .bind(uuid)
+    .prepare(
+      `SELECT liker_uuid FROM like_daily_target
+       WHERE liker_uuid = ? AND target_uuid = ? AND day = date('now')`
+    )
+    .bind(likerUuid, targetUuid)
     .first<{ liker_uuid: string }>();
   return Boolean(row);
+}
+
+/**
+ * Lists the friends one player already liked today.
+ *
+ * The game paints a like button per friend from it, so the daily state arrives with the count of
+ * the player instead of one request per row of the Follow List.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string} likerUuid - Liker UUID.
+ * @returns {Promise<string[]>} The liked friend UUIDs, in like order.
+ */
+async function readLikedTargetsToday(db: D1Database, likerUuid: string): Promise<string[]> {
+  const result = await db
+    .prepare(
+      `SELECT target_uuid FROM like_daily_target
+       WHERE liker_uuid = ? AND day = date('now')
+       ORDER BY created_at ASC`
+    )
+    .bind(likerUuid)
+    .all<{ target_uuid: string }>();
+  return (result.results ?? [])
+    .map((row) => row.target_uuid)
+    .filter((uuid): uuid is string => typeof uuid === "string" && uuid !== "");
+}
+
+/**
+ * Counts every like one player ever gave.
+ *
+ * It is the `likessent` trophy counter: the worker already knows the number, so the game reads it
+ * instead of rebuilding it from a local history that a new device would not have.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string} likerUuid - Liker UUID.
+ * @returns {Promise<number>} The likes given since the account exists.
+ */
+async function countLikesSent(db: D1Database, likerUuid: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS total FROM like_daily_target WHERE liker_uuid = ?")
+    .bind(likerUuid)
+    .first<{ total: number }>();
+  return Math.max(0, Math.trunc(Number(row?.total) || 0));
+}
+
+/**
+ * Gives the like of the UTC day to one friend, or reports that it was already given.
+ *
+ * The daily row is inserted FIRST: it is the reservation of the day, and the database refuses a
+ * second one for the same friend. Only then does the counter grow, so a like the day cannot give
+ * twice never reaches the counters.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string} likerUuid - Authenticated liker.
+ * @param {string} targetUuid - Friend to like (already validated, another account).
+ * @returns {Promise<'liked'|'already'>} What happened.
+ */
+async function giveLike(
+  db: D1Database,
+  likerUuid: string,
+  targetUuid: string
+): Promise<"liked" | "already"> {
+  const reserved = await db
+    .prepare(
+      `INSERT INTO like_daily_target (liker_uuid, target_uuid, day)
+       VALUES (?, ?, date('now'))
+       ON CONFLICT(liker_uuid, target_uuid, day) DO NOTHING`
+    )
+    .bind(likerUuid, targetUuid)
+    .run();
+  if ((reserved.meta?.changes ?? 0) === 0) return "already";
+
+  await db
+    .prepare(
+      `INSERT INTO likes (uuid, like_count, bonus_from_like)
+       VALUES (?, 1, ?)
+       ON CONFLICT(uuid) DO UPDATE SET
+         like_count = like_count + 1,
+         bonus_from_like = bonus_from_like + ?,
+         updated_at = datetime('now')`
+    )
+    .bind(targetUuid, LIKE_BONUS, LIKE_BONUS)
+    .run();
+  return "liked";
+}
+
+/**
+ * Reads the like counts of a list of friends.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string[]} uuids - Friend UUIDs.
+ * @returns {Promise<Record<string, number>>} UUID -> count, missing players at 0.
+ */
+async function readCounts(
+  db: D1Database,
+  uuids: string[]
+): Promise<Record<string, number>> {
+  const likes: Record<string, number> = {};
+  uuids.forEach((uuid) => {
+    likes[uuid] = 0;
+  });
+  if (uuids.length === 0) return likes;
+
+  const placeholders = uuids.map(() => "?").join(", ");
+  const rows = await db
+    .prepare(`SELECT uuid, like_count FROM likes WHERE uuid IN (${placeholders})`)
+    .bind(...uuids)
+    .all<LikeCountRow>();
+  for (const row of rows.results ?? []) {
+    likes[row.uuid] = Math.max(0, Math.trunc(Number(row.like_count) || 0));
+  }
+  return likes;
 }
 
 /**
@@ -186,19 +311,7 @@ async function readLikes(request: Request, db: D1Database): Promise<LikeRouteRes
       return { status: 400, body: { error: "Le champ 'uuids' contient un UUID invalide." } };
     }
     const uuids = Array.from(new Set(rawUuids)).slice(0, MAX_LIKE_BATCH);
-    const placeholders = uuids.map(() => "?").join(", ");
-    const rows = await db
-      .prepare(`SELECT uuid, like_count FROM likes WHERE uuid IN (${placeholders})`)
-      .bind(...uuids)
-      .all<LikeCountRow>();
-    const likes: Record<string, number> = {};
-    uuids.forEach((uuid) => {
-      likes[uuid] = 0;
-    });
-    for (const row of rows.results ?? []) {
-      likes[row.uuid] = Math.max(0, Math.trunc(Number(row.like_count) || 0));
-    }
-    return { status: 200, body: { likes } };
+    return { status: 200, body: { likes: await readCounts(db, uuids) } };
   }
 
   const uuid = (url.searchParams.get("uuid") ?? "").trim();
@@ -231,17 +344,16 @@ async function readLikes(request: Request, db: D1Database): Promise<LikeRouteRes
       likes: Math.max(0, Math.trunc(Number(fresh?.like_count) || likes)),
       bonus_from_like: roundBonus(fresh?.bonus_from_like),
       sparks,
-      liked_today: await hasLikedToday(db, uuid),
+      // The like counters of the ACCOUNT: what it received, what it sent, and which friends it
+      // already liked today (one row each, so the game paints its buttons without any extra read).
+      likes_sent: await countLikesSent(db, uuid),
+      liked_targets_today: await readLikedTargetsToday(db, uuid),
     },
   };
 }
 
 /**
  * `POST /likes/friend` - gives the like of the day to one followed player.
- *
- * The daily row is inserted FIRST: it is the reservation of the day, and the
- * database refuses a second one. Only then do the counts grow, so a like the
- * day cannot give twice never reaches the counters.
  *
  * @param {D1Database} db - D1 binding.
  * @param {Record<string, unknown>} body - Request body.
@@ -269,32 +381,12 @@ async function likeFriend(
     return { status: 404, body: { error: "Ce joueur n'a pas de compte en ligne." } };
   }
 
-  const reserved = await db
-    .prepare(
-      `INSERT INTO like_daily (liker_uuid, target_uuid, day)
-       VALUES (?, ?, date('now'))
-       ON CONFLICT(liker_uuid, day) DO NOTHING`
-    )
-    .bind(likerUuid, targetUuid)
-    .run();
-  if ((reserved.meta?.changes ?? 0) === 0) {
+  if ((await giveLike(db, likerUuid, targetUuid)) === "already") {
     return {
       status: 409,
-      body: { error: "Vous avez déjà donné votre like du jour.", liked_today: true },
+      body: { error: "Vous avez déjà liké ce joueur aujourd'hui.", liked_today: true },
     };
   }
-
-  await db
-    .prepare(
-      `INSERT INTO likes (uuid, like_count, bonus_from_like)
-       VALUES (?, 1, ?)
-       ON CONFLICT(uuid) DO UPDATE SET
-         like_count = like_count + 1,
-         bonus_from_like = bonus_from_like + ?,
-         updated_at = datetime('now')`
-    )
-    .bind(targetUuid, LIKE_BONUS, LIKE_BONUS)
-    .run();
 
   const row = await readLikeRow(db, targetUuid);
   return {
@@ -303,7 +395,89 @@ async function likeFriend(
       target_uuid: targetUuid,
       likes: Math.max(0, Math.trunc(Number(row?.like_count) || 1)),
       bonus_from_like: roundBonus(row?.bonus_from_like),
+      likes_sent: await countLikesSent(db, likerUuid),
       liked_today: true,
+    },
+  };
+}
+
+/**
+ * `POST /likes/batch` - gives the like of the day to a whole list of friends.
+ *
+ * One request for the entire Follow List: the client sends every UUID it follows, and this route
+ * reports what was liked, what was already liked today and what has no online account. Self is
+ * silently dropped (the game never offers it); an unknown account is reported instead of failing
+ * the batch, so one stale follow cannot block the other nineteen.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {Record<string, unknown>} body - Request body (`target_uuids`).
+ * @param {string} likerUuid - Authenticated liker.
+ * @returns {Promise<LikeRouteResult>} The result.
+ */
+async function likeBatch(
+  db: D1Database,
+  body: Record<string, unknown>,
+  likerUuid: string
+): Promise<LikeRouteResult> {
+  const raw = body.target_uuids;
+  if (!Array.isArray(raw)) {
+    return { status: 400, body: { error: "Le champ 'target_uuids' doit être une liste d'UUID." } };
+  }
+  const requested = Array.from(
+    new Set(
+      raw
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter((value) => value !== "")
+    )
+  );
+  if (requested.length === 0) {
+    return { status: 400, body: { error: "Le champ 'target_uuids' est vide." } };
+  }
+  if (requested.length > MAX_LIKE_TARGETS) {
+    return {
+      status: 400,
+      body: { error: `Un lot de likes accepte au plus ${MAX_LIKE_TARGETS} joueurs.` },
+    };
+  }
+  const invalid = requested.find((value) => !UUID_PATTERN.test(value));
+  if (invalid) {
+    return { status: 400, body: { error: "Le champ 'target_uuids' contient un UUID invalide." } };
+  }
+
+  const candidates = requested.filter((value) => value !== likerUuid);
+  const known = new Set<string>();
+  if (candidates.length > 0) {
+    const placeholders = candidates.map(() => "?").join(", ");
+    const rows = await db
+      .prepare(`SELECT uuid FROM users WHERE uuid IN (${placeholders})`)
+      .bind(...candidates)
+      .all<{ uuid: string }>();
+    for (const row of rows.results ?? []) {
+      if (typeof row.uuid === "string") known.add(row.uuid);
+    }
+  }
+
+  const liked: string[] = [];
+  const already: string[] = [];
+  const unknown: string[] = [];
+  for (const target of candidates) {
+    if (!known.has(target)) {
+      unknown.push(target);
+      continue;
+    }
+    if ((await giveLike(db, likerUuid, target)) === "liked") liked.push(target);
+    else already.push(target);
+  }
+
+  return {
+    status: 200,
+    body: {
+      liked,
+      already,
+      unknown,
+      likes: await readCounts(db, [...liked, ...already]),
+      likes_sent: await countLikesSent(db, likerUuid),
     },
   };
 }
@@ -330,7 +504,7 @@ export async function handleLikesRequest(
     return readLikes(request, db);
   }
 
-  if (path === "/likes/friend") {
+  if (path === "/likes/friend" || path === "/likes/batch") {
     if (request.method !== "POST") {
       return { status: 405, body: { error: "Méthode non autorisée." } };
     }
@@ -346,7 +520,7 @@ export async function handleLikesRequest(
     if (!(await authenticate(db, uuid, authCode))) {
       return { status: 403, body: { error: "Authentification invalide pour cet UUID." } };
     }
-    return likeFriend(db, body, uuid);
+    return path === "/likes/friend" ? likeFriend(db, body, uuid) : likeBatch(db, body, uuid);
   }
 
   return { status: 404, body: { error: "Route introuvable." } };
