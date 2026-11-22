@@ -5,3 +5,6 @@
 .wrangler/
 .dryrun/
 dev.log
+
+# Dependencies and the cache `wrangler dev` writes (node_modules/.mf): never committed.
+node_modules/
