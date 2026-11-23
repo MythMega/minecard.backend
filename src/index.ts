@@ -6,6 +6,7 @@ import {
   readFavoritesByUuids,
 } from "./favoriteService";
 import { handleLikesRequest } from "./likeService";
+import { handleLookupRequest } from "./lookupService";
 import { handleSaveRequest } from "./saveService";
 import { handleTradeRequest } from "./tradeService";
 import { normalizeWishlist, readWishlistsByUuids } from "./wishlistService";
@@ -239,6 +240,14 @@ export default {
 
       // `favorites` rides along with the cards: the Follow List gets the pinned cards and trophies
       // of every followed player in the very batch read it already makes.
+      // A pseudo is unique in the database, so a player can be asked for by name: this route
+      // translates it into the UUID every other route is keyed by. It answers { found: false }
+      // rather than a 404, a free pseudo being a normal answer to a lookup.
+      const lookupResult = await handleLookupRequest(request, env.DB, path);
+      if (lookupResult) {
+        return jsonResponse(lookupResult.body, lookupResult.status);
+      }
+
       if (request.method === "GET" && path === "/cards") {
         const rawUuids = url.searchParams.get("uuids") ?? "";
         const uuidList = rawUuids.split(",");
@@ -295,8 +304,8 @@ export default {
 
         const result = await upsertCard(env.DB, validation.data);
 
-        if (result.status === 403) {
-          return jsonResponse({ error: result.error }, 403);
+        if (result.status === 403 || result.status === 409) {
+          return jsonResponse({ error: result.error }, result.status);
         }
 
         return jsonResponse(

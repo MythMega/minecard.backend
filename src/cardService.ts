@@ -69,7 +69,41 @@ interface ExistingUserRow {
 export type UpsertResult =
   | { status: 201; action: "created"; card: PublicCard }
   | { status: 200; action: "updated"; card: PublicCard }
-  | { status: 403; error: string };
+  | { status: 403; error: string }
+  | { status: 409; error: string };
+
+/** Message of the 409 answered when another account already uses the pseudo. */
+export const USERNAME_TAKEN_ERROR = "Ce pseudo est déjà pris par un autre joueur.";
+
+/**
+ * Compares two pseudos the way the database does: case-insensitively.
+ *
+ * The unique index of the schema is declared COLLATE NOCASE, so Steve and
+ * steve are the SAME pseudo. A publication that only changes the case of its
+ * own pseudo therefore writes nothing new, and must not be refused.
+ *
+ * @param {string} a - One pseudo.
+ * @param {string} b - The other pseudo.
+ * @returns {boolean} True when both designate the same pseudo.
+ */
+function sameUsername(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Tells whether a D1 failure is the unique index of the pseudo refusing a write.
+ *
+ * Two publications can pass the read of upsertCard at the same instant and both
+ * try to store the same pseudo: the index keeps the rule, and the loser must get
+ * the same 409 as the usual case instead of a 500.
+ *
+ * @param {unknown} error - Error thrown by D1.
+ * @returns {boolean} True when the unique constraint of cards.username fired.
+ */
+function isUsernameConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /UNIQUE constraint failed: cards\.username/i.test(message);
+}
 
 const CARD_COLUMNS = [
   "uuid",
@@ -179,38 +213,63 @@ export async function upsertCard(
     action = "updated";
   }
 
-  await db
-    .prepare(
-      `INSERT INTO cards (${CARD_COLUMNS}, updated_at)
-      VALUES (${CARD_PLACEHOLDERS}, datetime('now'))
-      ON CONFLICT(uuid) DO UPDATE SET
-        ${CARD_UPDATE_ASSIGNMENTS},
-        updated_at = datetime('now')`
-    )
-    .bind(
-      input.uuid,
-      input.username,
-      input.background_card_id,
-      input.profile_picture_id,
-      input.title_id,
-      input.card_color_id,
-      input.username_color_id,
-      input.location_id,
-      input.card_layout,
-      input.profile_icon_size,
-      input.profile_icon_align,
-      input.profile_icon_shape,
-      input.card_rarity,
-      input.title_color_id,
-      input.open_booster,
-      input.different_cards,
-      input.date_first_card,
-      input.level,
-      input.block_mined,
-      input.picks,
-      input.points
-    )
-    .run();
+  // The pseudo is a PUBLIC identifier now (GET /lookup): it must designate one account only,
+  // otherwise a friend request would reach the wrong player. The read below answers the usual
+  // case; a publication that keeps its own pseudo skips it entirely, so a rename is the only
+  // upload that pays for it.
+  const existingCard = await db
+    .prepare("SELECT username FROM cards WHERE uuid = ?")
+    .bind(input.uuid)
+    .first<{ username: string }>();
+  if (!existingCard || !sameUsername(existingCard.username, input.username)) {
+    const taken = await db
+      .prepare("SELECT uuid FROM cards WHERE username = ? COLLATE NOCASE AND uuid <> ?")
+      .bind(input.username, input.uuid)
+      .first<{ uuid: string }>();
+    if (taken) {
+      return { status: 409, error: USERNAME_TAKEN_ERROR };
+    }
+  }
+
+  try {
+    await db
+      .prepare(
+        `INSERT INTO cards (${CARD_COLUMNS}, updated_at)
+        VALUES (${CARD_PLACEHOLDERS}, datetime('now'))
+        ON CONFLICT(uuid) DO UPDATE SET
+          ${CARD_UPDATE_ASSIGNMENTS},
+          updated_at = datetime('now')`
+      )
+      .bind(
+        input.uuid,
+        input.username,
+        input.background_card_id,
+        input.profile_picture_id,
+        input.title_id,
+        input.card_color_id,
+        input.username_color_id,
+        input.location_id,
+        input.card_layout,
+        input.profile_icon_size,
+        input.profile_icon_align,
+        input.profile_icon_shape,
+        input.card_rarity,
+        input.title_color_id,
+        input.open_booster,
+        input.different_cards,
+        input.date_first_card,
+        input.level,
+        input.block_mined,
+        input.picks,
+        input.points
+      )
+      .run();
+  } catch (error) {
+    if (isUsernameConflict(error)) {
+      return { status: 409, error: USERNAME_TAKEN_ERROR };
+    }
+    throw error;
+  }
 
   // The favourites travel with the card: a followed player gets them in the same batch read, so
   // the Follow List never needs a second route for them. A payload WITHOUT the lists writes
