@@ -183,16 +183,6 @@ async function readLikedTargetsToday(db: D1Database, likerUuid: string): Promise
 }
 
 /**
- * Counts every like one player ever gave.
- *
- * It is the `likessent` trophy counter: the worker already knows the number, so the game reads it
- * instead of rebuilding it from a local history that a new device would not have.
- *
- * @param {D1Database} db - D1 binding.
- * @param {string} likerUuid - Liker UUID.
- * @returns {Promise<number>} The likes given since the account exists.
- */
-/**
  * Reads the LAST likes one player received, newest first.
  *
  * `like_daily_target` holds who liked whom and when, so the ten last hearts of an account need no
