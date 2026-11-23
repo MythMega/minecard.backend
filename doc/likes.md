@@ -31,6 +31,7 @@ jour), que plus rien ne lit ni n'écrit. L'ordre 05 → 07 → 08 est celui d'un
 | `GET /likes?uuid=…` | — | Compteur public d'un joueur, **sans** toucher au bonus. |
 | `GET /likes?uuids=a,b,c` | — | Compteurs de la Follow List, 100 UUID maximum : `{ "likes": { "<uuid>": 3 } }`. |
 | `GET /likes?uuid=…&auth_code=…` | — | Lecture authentifiée : réclame la partie entière du bonus et renvoie `{ likes, bonus_from_like, sparks, likes_sent, liked_targets_today }`. |
+| `GET /likes/history?uuid=…&auth_code=…` | — | Les 10 derniers likes **reçus** et les 10 derniers likes **envoyés** : `{ received: [...], sent: [...] }`, chaque entrée portant la carte publique de l'autre joueur (`uuid`, `username`, `profile_picture_id`, `card_rarity`, `day`, `liked_at`). Lecture authentifiée, une seule requête (les deux listes tiennent dans un `db.batch()`). |
 
 La contrainte « un like par ami et par jour » est tenue par la clé primaire
 `(liker_uuid, target_uuid, day)` de `like_daily_target`, pas par le client : une seconde requête le
