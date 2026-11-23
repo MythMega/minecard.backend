@@ -41,6 +41,9 @@ const MAX_LIKE_TARGETS = 100;
 /** Bonus added to the liked player by one like. */
 const LIKE_BONUS = 0.1;
 
+/** Number of entries each side of the like history answers. */
+const LIKE_HISTORY_LIMIT = 10;
+
 /**
  * Reservation of the day. The primary key of `like_daily_target` refuses a second like to the same
  * friend, whatever the client sends, and `meta.changes` tells whether this one was the first.
@@ -78,6 +81,31 @@ interface LikeCountRow {
 
 interface AuthRow {
   auth_code: string;
+}
+
+/** One row of `like_daily_target` joined with the public card of the other player. */
+interface LikeHistoryRow {
+  uuid: string;
+  username: string | null;
+  profile_picture_id: string | null;
+  card_rarity: number | null;
+  day: string;
+  created_at: string;
+}
+
+/** One entry of the like history, already normalized for the game. */
+interface LikeHistoryEntry {
+  uuid: string;
+  username: string;
+  profile_picture_id: string;
+  card_rarity: number;
+  day: string;
+  liked_at: string;
+}
+
+/** One entry of a `db.batch()` result, reduced to the rows it selected. */
+interface BatchQueryResult {
+  results?: LikeHistoryRow[];
 }
 
 /** Result of one like route, wrapped into a JSON response by `index.ts`. */
@@ -152,6 +180,111 @@ async function readLikedTargetsToday(db: D1Database, likerUuid: string): Promise
   return (result.results ?? [])
     .map((row) => row.target_uuid)
     .filter((uuid): uuid is string => typeof uuid === "string" && uuid !== "");
+}
+
+/**
+ * Counts every like one player ever gave.
+ *
+ * It is the `likessent` trophy counter: the worker already knows the number, so the game reads it
+ * instead of rebuilding it from a local history that a new device would not have.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string} likerUuid - Liker UUID.
+ * @returns {Promise<number>} The likes given since the account exists.
+ */
+/**
+ * Reads the LAST likes one player received, newest first.
+ *
+ * `like_daily_target` holds who liked whom and when, so the ten last hearts of an account need no
+ * new table. The public card of the liker is joined to name it: a liker who never published their
+ * card keeps an empty name, and the game only offers to follow the named ones.
+ */
+const RECEIVED_HISTORY_SQL = `SELECT d.liker_uuid AS uuid, d.day, d.created_at,
+         c.username, c.profile_picture_id, c.card_rarity
+       FROM like_daily_target d
+       LEFT JOIN cards c ON c.uuid = d.liker_uuid
+       WHERE d.target_uuid = ?
+       ORDER BY d.created_at DESC
+       LIMIT ?`;
+
+/** Same read for the likes one player SENT (the `liker_uuid` side of the table). */
+const SENT_HISTORY_SQL = `SELECT d.target_uuid AS uuid, d.day, d.created_at,
+         c.username, c.profile_picture_id, c.card_rarity
+       FROM like_daily_target d
+       LEFT JOIN cards c ON c.uuid = d.target_uuid
+       WHERE d.liker_uuid = ?
+       ORDER BY d.created_at DESC
+       LIMIT ?`;
+
+/**
+ * Normalizes the rows of one history read.
+ *
+ * The worker rounds the rarity and the strings it returns, so the game can paint an avatar without
+ * defending itself against a malformed row.
+ *
+ * @param {BatchQueryResult|undefined} result - One result of `db.batch()`.
+ * @returns {LikeHistoryEntry[]} The entries, newest first.
+ */
+function readHistoryRows(result: BatchQueryResult | undefined): LikeHistoryEntry[] {
+  return (result?.results ?? [])
+    .filter((row) => typeof row.uuid === "string" && row.uuid !== "")
+    .map((row) => ({
+      uuid: row.uuid,
+      username: typeof row.username === "string" ? row.username : "",
+      profile_picture_id:
+        typeof row.profile_picture_id === "string" ? row.profile_picture_id : "",
+      card_rarity: Math.min(6, Math.max(1, Math.trunc(Number(row.card_rarity) || 1))),
+      day: typeof row.day === "string" ? row.day : "",
+      liked_at: typeof row.created_at === "string" ? row.created_at : "",
+    }));
+}
+
+/**
+ * Reads the last likes a player received and the last likes it sent.
+ *
+ * Both reads travel in ONE `db.batch()`, so the history costs a single D1 round trip like the
+ * counters of the authenticated read.
+ *
+ * @param {D1Database} db - D1 binding.
+ * @param {string} uuid - Authenticated player.
+ * @returns {Promise<{received: LikeHistoryEntry[], sent: LikeHistoryEntry[]}>} The history.
+ */
+async function readLikeHistory(
+  db: D1Database,
+  uuid: string
+): Promise<{ received: LikeHistoryEntry[]; sent: LikeHistoryEntry[] }> {
+  const [received, sent] = (await db.batch([
+    db.prepare(RECEIVED_HISTORY_SQL).bind(uuid, LIKE_HISTORY_LIMIT),
+    db.prepare(SENT_HISTORY_SQL).bind(uuid, LIKE_HISTORY_LIMIT),
+  ])) as BatchQueryResult[];
+  return { received: readHistoryRows(received), sent: readHistoryRows(sent) };
+}
+
+/**
+ * `GET /likes/history` - the ten last likes received and the ten last likes sent.
+ *
+ * Authenticated with the usual `uuid` + `auth_code` pair: a heart is private, so a history is only
+ * ever answered to the account itself. Each entry carries the public card of the other player
+ * (name, avatar, rarity), which lets the game follow a liker without a second request.
+ *
+ * @param {Request} request - Incoming request.
+ * @param {D1Database} db - D1 binding.
+ * @returns {Promise<LikeRouteResult>} The result.
+ */
+async function readLikeHistoryRoute(
+  request: Request,
+  db: D1Database
+): Promise<LikeRouteResult> {
+  const url = new URL(request.url);
+  const uuid = (url.searchParams.get("uuid") ?? "").trim();
+  if (uuid === "" || !UUID_PATTERN.test(uuid)) {
+    return { status: 400, body: { error: "Le champ 'uuid' est invalide." } };
+  }
+  const authCode = (url.searchParams.get("auth_code") ?? "").trim();
+  if (!(await authenticate(db, uuid, authCode))) {
+    return { status: 403, body: { error: "Authentification invalide pour cet UUID." } };
+  }
+  return { status: 200, body: await readLikeHistory(db, uuid) };
 }
 
 /**
@@ -522,6 +655,13 @@ export async function handleLikesRequest(
       return { status: 405, body: { error: "Méthode non autorisée." } };
     }
     return readLikes(request, db);
+  }
+
+  if (path === "/likes/history") {
+    if (request.method !== "GET") {
+      return { status: 405, body: { error: "Méthode non autorisée." } };
+    }
+    return readLikeHistoryRoute(request, db);
   }
 
   if (path === "/likes/friend" || path === "/likes/batch") {
