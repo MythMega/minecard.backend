@@ -41,4 +41,18 @@ async function saveMyCard() {
   // Contient { action: "created" | "updated", card: { ... } } sans auth_code
   return await res.json();
 }
-```
+```
+
+## Pseudo unique
+
+`username` est unique en base (index insensible à la casse `idx_cards_username_unique`, voir
+`sql/schema/10-username-unique.sql`). Une publication qui change de pseudo est donc vérifiée avant
+l'écriture :
+
+- `409` avec `{ "error": "Ce pseudo est déjà pris par un autre joueur." }` quand un autre compte
+  l'utilise déjà (même en changeant la casse) ;
+- l'index rattrape les deux publications simultanées et renvoie le même `409`, jamais un `500` ;
+- une publication qui garde son propre pseudo n'est jamais refusée.
+
+Le pseudo devient alors un identifiant public, traduit en UUID par `GET /lookup` (voir
+`doc/lookup.md`).
