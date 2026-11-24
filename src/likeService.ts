@@ -42,7 +42,7 @@ const MAX_LIKE_TARGETS = 100;
 const LIKE_BONUS = 0.1;
 
 /** Number of entries each side of the like history answers. */
-const LIKE_HISTORY_LIMIT = 20;
+const LIKE_HISTORY_LIMIT = 25;
 
 /**
  * Reservation of the day. The primary key of `like_daily_target` refuses a second like to the same
