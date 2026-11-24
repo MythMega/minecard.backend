@@ -4,7 +4,8 @@ Deux joueurs échangent **une carte de même rareté**. Le worker est la source 
 vérité du **cycle de vie** d'un échange ; la collection, les Sparks, le stock
 d'**Œil de l'End** et les statistiques restent locaux au navigateur.
 
-- Schéma : [`sql/schema/trade-table.sql`](../sql/schema/trade-table.sql)
+- Schéma : [`sql/schema/03-trade-table.sql`](../sql/schema/03-trade-table.sql)
+- Migration rareté 6 : [`sql/schema/11-trade-rarity-6.sql`](../sql/schema/11-trade-rarity-6.sql)
 - Code : [`src/tradeService.ts`](../src/tradeService.ts), routé par `src/index.ts`
 - Côté jeu : `js/business/TradeManager.js` et `js/UI/views/TradeView.js`
 
@@ -12,10 +13,10 @@ d'**Œil de l'End** et les statistiques restent locaux au navigateur.
 
 | Règle | Valeur |
 | --- | --- |
-| Raretés échangeables | 1 à 5 (la rareté 6, Unique, ne s'échange jamais) |
+| Raretés échangeables | 1 à 6 ; la rareté 6 (Unique) à partir de **4 étoiles d'amitié** |
 | Cartes échangées | même rareté **exactement** |
-| Coût en Œil de l'End | 1 par rareté (rareté 5 = tout le stock) |
-| Coût en Sparks | rareté² (rareté 4 = 16 Sparks) |
+| Coût en Œil de l'End | 1 par rareté, 5 pour la rareté 6 (tout le stock) |
+| Coût en Sparks | rareté² (rareté 4 = 16 Sparks, rareté 6 = 36) |
 | Stock d'Œil de l'End | 5 maximum, +1 par jour UTC, **stocké localement** |
 | Demandes ouvertes simultanées | 1 par initiateur (`pending` + `proposed`) |
 | Délai | 24 h avant expiration automatique, remboursement des deux côtés |
@@ -25,7 +26,14 @@ d'**Œil de l'End** et les statistiques restent locaux au navigateur.
 Le coût est identique pour les deux joueurs : chacun paie
 `rareté` Œils de l'End et `rareté²` Sparks pour la carte qu'il met dans
 l'échange. Aucune des deux cartes ne peut être « plus chère » que l'autre,
-puisque la rareté est la même.
+puisque la rareté est la même. La rareté 6 coûte **5 Œils** (`trades.prices` du
+jeu) et 36 Sparks avant réduction d'amitié.
+
+La XP d'amitié vit dans la sauvegarde du joueur, pas dans le worker : chaque
+requête de rareté 6 porte donc `friendship_stars`, le nombre d'étoiles que ce
+joueur a avec l'autre, et le worker refuse en dessous de 4 (`400`). Ce contrôle
+empêche un client ancien ou fautif d'ouvrir la rareté ; le vrai verrou reste le
+dialogue du jeu, qui n'offre la carte qu'à partir de 4 étoiles.
 
 ## Authentification
 
@@ -132,10 +140,14 @@ Un trade est rendu sous cette forme :
   "uuid": "…", "auth_code": "…",
   "responder_uuid": "…",
   "rarity": 3,
+  "friendship_stars": 3,
   "card": { "key": "…", "card_id": "…", "style": "classic", "set": "A1",
             "rarity": 3, "name": "Creeper" }
 }
 ```
+
+Pour la rareté 6, `friendship_stars` doit valoir au moins 4, sinon la réponse est
+`400` et rien n'est écrit.
 
 La date d'initiation est écrite par l'horloge du **worker** (`created_at`) et
 l'échéance en découle : une horloge client faussée ne peut ni allonger ni
@@ -154,8 +166,12 @@ receveur résout l'image depuis son propre catalogue avec `card.key`.
 
 ```json
 { "uuid": "…", "auth_code": "…", "trade_id": "…", "action": "propose",
+  "friendship_stars": 3,
   "card": { "…": "…", "rarity": 3 } }
 ```
+
+Comme pour la création, une contre-proposition de rareté 6 exige
+`friendship_stars >= 4` et reçoit `400` sinon.
 
 `deny` clôt le trade, et le client rembourse A depuis son escrow. `propose`
 remplace une éventuelle contre-proposition précédente ; le client rend l'ancien
@@ -229,11 +245,14 @@ rareté (`byRarity`).
 ## Installation
 
 ```bash
-npx wrangler d1 execute minecard-db --file=./sql/schema/trade-table.sql --remote
+npx wrangler d1 execute minecard-db --file=./sql/schema/03-trade-table.sql --remote
+# base déjà créée avant la rareté 6 : reconstruire la table une fois
+npx wrangler d1 execute minecard-db --file=./sql/schema/11-trade-rarity-6.sql --remote
 npx wrangler deploy
 ```
 
-Le script est idempotent : le relancer ne détruit aucun échange en cours.
+Les deux scripts conservent les échanges existants : `03` ne crée que ce qui
+manque, et `11` recopie chaque ligne avant de reposer les index.
 
 ## Notes de conception
 

@@ -33,9 +33,19 @@
  * Reference: `sql/schema/trade-table.sql` and `doc/trades.md`.
  */
 
-/** Rarities a trade can involve. Rarity 6 (Unique) is never tradable. */
-const MIN_TRADE_RARITY = 1;
-const MAX_TRADE_RARITY = 5;
+/** Rarities a trade can involve. Rarity 6 (Unique) opens at four friendship stars. */
+export const MIN_TRADE_RARITY = 1;
+export const MAX_TRADE_RARITY = 6;
+
+/**
+ * Friendship stars a trade of rarity 6 requires.
+ *
+ * The friendship XP lives in the player's save, not in the worker: each side sends its own star
+ * count with the card (`friendship_stars`), and the worker refuses a rarity 6 trade below four.
+ * This is the best a worker without the friendship ledger can do, and it keeps a client bug or an
+ * old tab from opening the rarity by accident; the real gate remains the player's own dialog.
+ */
+export const FRIENDSHIP_STARS_FOR_UNIQUE = 4;
 
 /** Deadline of a trade that is not accepted yet, in hours. */
 const TRADE_EXPIRY_HOURS = 24;
@@ -103,9 +113,23 @@ export interface TradeRouteResult {
   body: unknown;
 }
 
-/** Cost of one side of a trade, for a given rarity. */
+/** Cost of one side of a trade, for a given rarity (the full price, before friendship discounts). */
 export function getTradeCost(rarity: number): { sparks: number; enderEyes: number } {
-  return { sparks: rarity * rarity, enderEyes: rarity };
+  // Rarity 6 costs five Ender Eyes, like the `trades.prices` table of the game (`null` below four
+  // stars is the client's gate, not a cheaper price). Every other rarity keeps the legacy rule.
+  return { sparks: rarity * rarity, enderEyes: rarity === MAX_TRADE_RARITY ? 5 : rarity };
+}
+
+/**
+ * Tells whether a rarity may be exchanged at a friendship level.
+ *
+ * @param {number} rarity - Shared rarity of the trade (1-6).
+ * @param {number} stars - Friendship stars declared by the player, 0 to 5.
+ * @returns {boolean} False only for rarity 6 below four stars.
+ */
+export function isRarityOpenAtFriendship(rarity: number, stars: number): boolean {
+  if (rarity !== MAX_TRADE_RARITY) return true;
+  return Number.isInteger(stars) && stars >= FRIENDSHIP_STARS_FOR_UNIQUE;
 }
 
 /**
@@ -144,7 +168,7 @@ function validateTradeCard(
   }
   const rarity = typeof card.rarity === "number" ? Math.trunc(card.rarity) : Number(card.rarity);
   if (!Number.isInteger(rarity) || rarity < MIN_TRADE_RARITY || rarity > MAX_TRADE_RARITY) {
-    return { ok: false, error: "La rareté de la carte doit être comprise entre 1 et 5." };
+    return { ok: false, error: "La rareté de la carte doit être comprise entre 1 et 6." };
   }
   if (rarity !== expectedRarity) {
     return { ok: false, error: "Les deux cartes doivent avoir la même rareté." };
@@ -436,6 +460,12 @@ async function createTrade(
   if (!Number.isInteger(rawRarity) || rawRarity < MIN_TRADE_RARITY || rawRarity > MAX_TRADE_RARITY) {
     return { status: 400, body: { error: "Cette rareté ne peut pas être échangée." } };
   }
+  if (!isRarityOpenAtFriendship(rawRarity, Number(body.friendship_stars))) {
+    return {
+      status: 400,
+      body: { error: "La rareté 6 ne s'échange qu'à partir de 4 étoiles d'amitié." },
+    };
+  }
   const validation = validateTradeCard(body.card, rawRarity);
   if (!validation.ok) {
     return { status: 400, body: { error: validation.error } };
@@ -529,6 +559,12 @@ async function respondToTrade(
     return { status: 400, body: { error: "Action inconnue." } };
   }
 
+  if (!isRarityOpenAtFriendship(trade.rarity, Number(body.friendship_stars))) {
+    return {
+      status: 400,
+      body: { error: "La rareté 6 ne s'échange qu'à partir de 4 étoiles d'amitié." },
+    };
+  }
   const validation = validateTradeCard(body.card, trade.rarity);
   if (!validation.ok) {
     return { status: 400, body: { error: validation.error } };

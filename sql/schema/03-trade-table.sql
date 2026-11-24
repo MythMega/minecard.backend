@@ -2,8 +2,8 @@
 -- Trade system ("Échanges") - MineCards
 --
 -- Apply with:
---   npx wrangler d1 execute minecard-db --file=./sql/schema/trade-table.sql --remote
---   npx wrangler d1 execute minecard-db --file=./sql/schema/trade-table.sql --local
+--   npx wrangler d1 execute minecard-db --file=./sql/schema/03-trade-table.sql --remote
+--   npx wrangler d1 execute minecard-db --file=./sql/schema/03-trade-table.sql --local
 --
 -- Reference: `src/tradeService.ts` and `doc/trades.md`.
 --
@@ -37,16 +37,17 @@ CREATE TABLE IF NOT EXISTS trades (
   id TEXT PRIMARY KEY,
   status TEXT NOT NULL
     CHECK (status IN ('pending', 'proposed', 'accepted', 'completed', 'declined', 'cancelled', 'expired')),
-  -- Rarity shared by both cards. 6 (Unique) is never tradable: the CHECK makes
-  -- the rule impossible to bypass, whatever the client sends.
-  rarity INTEGER NOT NULL CHECK (rarity BETWEEN 1 AND 5),
+  -- Rarity shared by both cards. Rarity 6 (Unique) is tradable from four
+  -- friendship stars, checked by the worker (`friendship_stars`); the column
+  -- accepts it so the row can be written.
+  rarity INTEGER NOT NULL CHECK (rarity BETWEEN 1 AND 6),
   initiator_uuid TEXT NOT NULL,
   responder_uuid TEXT NOT NULL,
   initiator_card_key TEXT NOT NULL,
   initiator_card_json TEXT NOT NULL,
   responder_card_key TEXT,
   responder_card_json TEXT,
-  -- Cost of ONE side: 1 Ender Eye per rarity + rarity² Sparks.
+  -- Cost of ONE side: 5 Ender Eyes for rarity 6, one per rarity below, + rarity² Sparks.
   sparks_cost INTEGER NOT NULL CHECK (sparks_cost > 0),
   ender_eyes_cost INTEGER NOT NULL CHECK (ender_eyes_cost BETWEEN 1 AND 5),
   -- Initiation timestamp, written by the SERVER clock: the client one is never trusted.
